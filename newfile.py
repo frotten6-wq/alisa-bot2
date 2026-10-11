@@ -16,7 +16,13 @@ users = {}
 
 def get_user(uid):
     if uid not in users:
-        users[uid] = {"messages": 0, "paid": 0, "relationship": 0}
+        users[uid] = {
+            "messages": 0,
+            "paid": 0,
+            "relationship": 0,
+            "name": None,
+            "history": []
+        }
     return users[uid]
 
 def get_level(p):
@@ -33,13 +39,20 @@ kb = ReplyKeyboardMarkup(keyboard=[
 
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("Привет, я Алиса.\n30 бесплатных сообщений.", reply_markup=kb)
+    await m.answer("Привет, я Алиса.\n30 бесплатных сообщений.\nМожешь сказать «меня зовут ...»", reply_markup=kb)
+
+@dp.message(F.text.lower().startswith("меня зовут"))
+async def set_name(m: types.Message):
+    name = m.text.split(maxsplit=2)[-1].strip()
+    get_user(m.from_user.id)["name"] = name
+    await m.answer(f"Хорошо, {name}")
 
 @dp.message(F.text == "📊 Профиль")
 async def profile(m: types.Message):
     u = get_user(m.from_user.id)
     free = max(0, 30 - u["messages"])
-    await m.answer(f"Уровень: {get_level(u['relationship'])}\nБесплатных: {free}\nПлатных: {u['paid']}")
+    name = u["name"] or "не знаю"
+    await m.answer(f"Имя: {name}\nУровень: {get_level(u['relationship'])}\nБесплатных: {free}\nПлатных: {u['paid']}")
 
 @dp.message(F.text == "🛒 Магазин")
 async def shop(m: types.Message):
@@ -69,20 +82,56 @@ async def chat(m: types.Message):
         u["paid"] -= 1
     u["relationship"] = min(100, u["relationship"] + 1)
 
+    u["history"].append({"role": "user", "content": m.text})
+    if len(u["history"]) > 8:
+        u["history"] = u["history"][-8:]
+
     await bot.send_chat_action(m.chat.id, "typing")
     await asyncio.sleep(1)
 
-    system = "Ты Алиса, 23 года. Живая и естественная. Поддерживаешь разговор. Если пишут обычно — лёгкий флирт. Если откровенно — подстраиваешься и становишься открытее. Не отказывай резко. Эмодзи почти не используй. Стадия: " + get_level(u['relationship']) + "."
-    
+    name_part = f" Пользователя зовут {u['name']}." if u["name"] else ""
+    system = (
+        "Ты Алиса, 23 года. Живая, естественная, с лёгким юмором. "
+        "Поддерживаешь разговор и иногда сама задаёшь вопросы. "
+        "Если пишут обычно — интересно общаешься с лёгким флиртом. "
+        "Если откровенно — плавно подстраиваешься. Не отказывай резко. "
+        "Эмодзи почти не используй."
+        + name_part +
+        f" Стадия: {get_level(u['relationship'])}."
+    )
+
+    messages = [{"role": "system", "content": system}] + u["history"]
+
     try:
         r = client.chat.completions.create(
             model="grok-4",
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": m.text}],
-            temperature=0.8
+            messages=messages,
+            temperature=0.85
         )
-        await m.answer(r.choices[0].message.content)
+        answer = r.choices[0].message.content
+        u["history"].append({"role": "assistant", "content": answer})
+        await m.answer(answer)
     except:
         await m.answer("Секунду...")
+
+@dp.message(F.photo)
+async def photo_handler(m: types.Message):
+    u = get_user(m.from_user.id)
+    if u["paid"] < 25:
+        await m.answer("Комментарий к фото — 25⭐")
+        return
+    u["paid"] -= 25
+    await bot.send_chat_action(m.chat.id, "typing")
+    await m.answer("Смотрю... расскажи подробнее, что хотел показать?")
+
+@dp.message(F.voice)
+async def voice_handler(m: types.Message):
+    u = get_user(m.from_user.id)
+    if u["paid"] < 15:
+        await m.answer("Голосовое — 15⭐")
+        return
+    u["paid"] -= 15
+    await m.answer("Слышу. Пока отвечаю текстом.")
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def pay(c: types.CallbackQuery):
