@@ -189,7 +189,3 @@ async def success(message: types.Message):
         await message.answer("Спасибо за подарок... мне приятно")
 
 async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
