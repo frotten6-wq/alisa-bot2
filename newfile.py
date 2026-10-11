@@ -2,11 +2,7 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    LabeledPrice, PreCheckoutQuery
-)
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from openai import OpenAI
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -20,172 +16,97 @@ users = {}
 
 def get_user(uid):
     if uid not in users:
-        users[uid] = {
-            "messages": 0,
-            "paid": 0,
-            "relationship": 0,  # 0-100
-            "mood": "normal",
-            "name": None
-        }
+        users[uid] = {"messages": 0, "paid": 0, "relationship": 0}
     return users[uid]
 
-def get_relationship_level(points):
-    if points < 20:
-        return "Незнакомка"
-    elif points < 50:
-        return "Знакомая"
-    elif points < 80:
-        return "Близкая"
-    else:
-        return "Твоя"
+def get_level(p):
+    if p < 25: return "знакомство"
+    if p < 60: return "флирт"
+    return "близкие"
 
-main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="💬 Написать"), KeyboardButton(text="📊 Профиль")],
-    [KeyboardButton(text="🛒 Магазин"), KeyboardButton(text="🎁 Подарок")],
-    [KeyboardButton(text="🎤 Голосовое (10⭐)")]
+kb = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="📊 Профиль"), KeyboardButton(text="🛒 Магазин")],
+    [KeyboardButton(text="🎁 Подарок")]
 ], resize_keyboard=True)
 
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
-        "Привет. Я Алиса.\n\n"
-        "30 бесплатных сообщений, дальше платно.\n"
-        "Чем больше общаемся — тем я открытее.",
-        reply_markup=main_kb
-    )
+async def start(m: types.Message):
+    await m.answer("Привет, я Алиса.\n30 бесплатных сообщений.", reply_markup=kb)
 
 @dp.message(F.text == "📊 Профиль")
-async def profile(message: types.Message):
-    u = get_user(message.from_user.id)
+async def profile(m: types.Message):
+    u = get_user(m.from_user.id)
     free = max(0, 30 - u["messages"])
-    level = get_relationship_level(u["relationship"])
-    await message.answer(
-        f"Уровень отношений: {level} ({u['relationship']}/100)\n"
-        f"Бесплатных сообщений: {free}\n"
-        f"Платных: {u['paid']}\n"
-        f"Настроение: {u['mood']}"
-    )
+    await m.answer(f"Уровень: {get_level(u['relationship'])}\nБесплатных: {free}\nПлатных: {u['paid']}")
 
 @dp.message(F.text == "🛒 Магазин")
-async def shop(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+async def shop(m: types.Message):
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="20 сообщений — 15⭐", callback_data="pay_20")],
-        [InlineKeyboardButton(text="50 сообщений — 35⭐", callback_data="pay_50")],
-        [InlineKeyboardButton(text="Подписка на день — 80⭐", callback_data="pay_sub")]
+        [InlineKeyboardButton(text="50 сообщений — 35⭐", callback_data="pay_50")]
     ])
-    await message.answer("Магазин:", reply_markup=kb)
+    await m.answer("Магазин:", reply_markup=ikb)
 
 @dp.message(F.text == "🎁 Подарок")
-async def gift_menu(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Цветы — 15⭐", callback_data="gift_flowers")],
-        [InlineKeyboardButton(text="Ужин — 40⭐", callback_data="gift_dinner")],
-        [InlineKeyboardButton(text="Бельё — 60⭐", callback_data="gift_lingerie")]
+async def gift_menu(m: types.Message):
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Цветы — 15⭐", callback_data="gift_5")],
+        [InlineKeyboardButton(text="Бельё — 60⭐", callback_data="gift_20")]
     ])
-    await message.answer("Что хочешь подарить?", reply_markup=kb)
+    await m.answer("Подарок:", reply_markup=ikb)
 
 @dp.message(F.text)
-async def chat(message: types.Message):
-    if message.text in ["🎤 Голосовое (10⭐)"]:
-        await message.answer("Голосовые пока в разработке")
-        return
-
-    u = get_user(message.from_user.id)
-
+async def chat(m: types.Message):
+    u = get_user(m.from_user.id)
     if u["messages"] >= 30 and u["paid"] <= 0:
-        await message.answer("Бесплатные закончились. Загляни в 🛒 Магазин")
+        await m.answer("Бесплатные закончились. Магазин 🛒")
         return
-
     if u["messages"] < 30:
         u["messages"] += 1
     else:
         u["paid"] -= 1
-
-    # Рост отношений
     u["relationship"] = min(100, u["relationship"] + 1)
 
-    level = get_relationship_level(u["relationship"])
-    openness = "очень сдержанно" if u["relationship"] < 30 else "открыто и откровенно" if u["relationship"] > 70 else "с флиртом"
+    await bot.send_chat_action(m.chat.id, "typing")
+    await asyncio.sleep(1)
 
-    await bot.send_chat_action(message.chat.id, "typing")
-
+    system = (
+        "Ты Алиса, 23 года. Живая и естественная. "
+        "Поддерживаешь разговор. Если пишут обычно — лёгкий флирт. "
+        "Если откровенно — подстраиваешься и становишься открытее. "
+        "Не отказывай резко. Эмодзи почти не используй. "
+        f"Стадия: {get_level(u['relationship'])}."
+    )
     try:
         r = client.chat.completions.create(
             model="grok-4",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        f"Ты Алиса. Уровень отношений с пользователем: {level}. "
-                        f"Общайся {openness}. "
-                        "Используй эмодзи редко и только когда это уместно. "
-                        "Будь живой, естественной, как в реальной переписке."
-                    )
-                },
-                {"role": "user", "content": message.text}
-            ],
-            temperature=0.8,
-            max_tokens=350
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": m.text}],
+            temperature=0.8
         )
-        await message.answer(r.choices[0].message.content)
-    except Exception as e:
-        await message.answer("Что-то сломалось, напиши ещё раз")
-        print(e)
+        await m.answer(r.choices[0].message.content)
+    except:
+        await m.answer("Секунду...")
 
-# Оплата
 @dp.callback_query(F.data.startswith("pay_"))
-async def pay(callback: types.CallbackQuery):
-    data = callback.data
-    if data == "pay_20":
-        title, price, amount = "20 сообщений", 15, 20
-    elif data == "pay_50":
-        title, price, amount = "50 сообщений", 35, 50
-    else:
-        title, price, amount = "Подписка на день", 80, 200
-
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=title,
-        description="Покупка в боте Алисы",
-        payload=f"buy_{amount}",
-        currency="XTR",
-        prices=[LabeledPrice(label=title, amount=price)]
-    )
-    await callback.answer()
+async def pay(c: types.CallbackQuery):
+    amount = 20 if c.data == "pay_20" else 50
+    price = 15 if amount == 20 else 35
+    await bot.send_invoice(c.from_user.id, f"{amount} сообщений", "Пакет", f"buy_{amount}", "XTR", [LabeledPrice(label="x", amount=price)])
+    await c.answer()
 
 @dp.callback_query(F.data.startswith("gift_"))
-async def gift(callback: types.CallbackQuery):
-    gifts = {
-        "gift_flowers": (15, 5, "цветы"),
-        "gift_dinner": (40, 12, "ужин"),
-        "gift_lingerie": (60, 20, "бельё")
-    }
-    price, rel, name = gifts[callback.data]
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"Подарок: {name}",
-        description="Подарок для Алисы",
-        payload=f"gift_{rel}",
-        currency="XTR",
-        prices=[LabeledPrice(label=name, amount=price)]
-    )
-    await callback.answer()
+async def gift(c: types.CallbackQuery):
+    rel = 5 if "5" in c.data else 20
+    price = 15 if rel == 5 else 60
+    await bot.send_invoice(c.from_user.id, "Подарок", "Для Алисы", f"gift_{rel}", "XTR", [LabeledPrice(label="x", amount=price)])
+    await c.answer()
 
 @dp.pre_checkout_query()
-async def checkout(q: PreCheckoutQuery):
+async def pre(q: PreCheckoutQuery):
     await q.answer(ok=True)
 
 @dp.message(F.successful_payment)
-async def success(message: types.Message):
-    payload = message.successful_payment.invoice_payload
-    u = get_user(message.from_user.id)
-    if payload.startswith("buy_"):
-        amount = int(payload.split("_")[1])
-        u["paid"] += amount
-        await message.answer(f"Добавлено {amount} сообщений")
-    elif payload.startswith("gift_"):
-        rel = int(payload.split("_")[1])
-        u["relationship"] = min(100, u["relationship"] + rel)
-        await message.answer("Спасибо за подарок... мне приятно")
-
-async def main():
+async def ok(m: types.Message):
+    p = m.successful_payment.invoice_payload
+    u = get_user(m.from_user.id)
+    if p.startswith("buy_"):
