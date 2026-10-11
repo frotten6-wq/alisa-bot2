@@ -1,3 +1,4 @@
+import os
 import asyncio
 import base64
 from aiogram import Bot, Dispatcher, types, F
