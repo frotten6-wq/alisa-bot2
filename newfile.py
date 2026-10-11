@@ -177,26 +177,4 @@ async def handle_text(message: Message):
         response = client.chat.completions.create(
             model="grok-3",
             messages=messages,
-            temperature=0.9,
-            max_tokens=600
-        )
-
-        reply = response.choices[0].message.content.strip()
-        user_dialogs[user_id].append({"role": "assistant", "content": reply})
-
-        if len(user_dialogs[user_id]) > 16:
-            user_dialogs[user_id] = user_dialogs[user_id][-16:]
-
-        await message.answer(reply)
-
-    except Exception as e:
-        await message.answer(f"Что-то сломалось 😔\n{e}")
-
-# ====================== ЗАПУСК ======================
-
-async def main():
-    print("Алиса запущена...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            temperature
