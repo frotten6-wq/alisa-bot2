@@ -1,4 +1,4 @@
-"""Telegram-бот «Алиса»: aiogram 3 + Grok (xAI) + Telegram Stars."""
+"""Telegram-бот «Алиса»: aiogram 3 + Grok (xAI) + Telegram Stars + голосовые ElevenLabs."""
 import asyncio
 import base64
 import logging
@@ -53,6 +53,15 @@ SUPPORT_CONTACT = "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN"
 APPEARANCE = env("APPEARANCE", "adult woman, 23 years old, long dark hair, brown eyes, natural look")
 BACKUP_ENABLED = env("BACKUP_ENABLED", "1") == "1"
 NUDGES_ENABLED = env("NUDGES_ENABLED", "1") == "1"
+
+# Голосовые (ElevenLabs). Ключ и ID голоса задаются переменными окружения на Railway
+ELEVEN_API_KEY = env("ELEVEN_API_KEY")
+ELEVEN_VOICE_ID = env("ELEVEN_VOICE_ID")
+ELEVEN_MODEL = env("ELEVEN_MODEL", "eleven_multilingual_v2")
+VOICE_ENABLED = bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)
+VOICE_PRICE = 20            # звёзд за одно голосовое для тех, у кого нет подписки
+VOICE_MAX_CHARS = 600       # длиннее обрезаем, чтобы не тратить символы
+VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
 
 FREE_MESSAGES = 30          # бесплатных сообщений на пользователя
 HISTORY_IN_PROMPT = 12      # сколько последних сообщений уходит в модель
@@ -136,6 +145,7 @@ BOT_USERNAME = ""
 _locks: dict[int, asyncio.Lock] = {}
 _bg_tasks: set[asyncio.Task] = set()
 _alert_last: dict[str, float] = {}
+_voice_used: dict[int, tuple[str, int]] = {}
 
 
 def user_lock(uid: int) -> asyncio.Lock:
@@ -281,8 +291,9 @@ async def load_history(uid: int, limit: int) -> list[dict]:
     return rows[::-1]
 
 
-async def save_exchange(uid: int, source: str, user_text: str, answer: str) -> None:
-    """Списываем сообщение и сохраняем историю только после успешного ответа."""
+async def save_exchange(uid: int, source: str, user_text: str, answer: str) -> int:
+    """Списываем сообщение и сохраняем историю только после успешного ответа.
+    Возвращает id ответа Алисы (нужен для кнопки озвучки)."""
     sets = ["relationship = MIN(100, relationship + 1)", "since_summary = since_summary + 1"]
     if source == "free":
         sets.append("messages = messages + 1")
@@ -290,12 +301,14 @@ async def save_exchange(uid: int, source: str, user_text: str, answer: str) -> N
         sets.append("paid = paid - 1")
     await db.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (uid,))
     await db.execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "user", user_text))
-    await db.execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "assistant", answer))
+    cur = await db.execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "assistant", answer))
+    aid = cur.lastrowid
     await db.execute(
         "DELETE FROM history WHERE user_id=? AND id NOT IN "
         "(SELECT id FROM history WHERE user_id=? ORDER BY id DESC LIMIT ?)",
         (uid, uid, HISTORY_KEEP))
     await db.commit()
+    return aid
 
 
 async def get_reference() -> bytes | None:
@@ -344,9 +357,10 @@ def build_system(u: dict) -> str:
     return "\n".join(parts)
 
 
-async def send_long(m: types.Message, text: str) -> None:
-    for i in range(0, len(text), 4000):
-        await m.answer(text[i:i + 4000])
+async def send_long(m: types.Message, text: str, reply_markup=None) -> None:
+    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)] or [text]
+    for n, chunk in enumerate(chunks):
+        await m.answer(chunk, reply_markup=reply_markup if n == len(chunks) - 1 else None)
 
 
 def spawn(coro) -> None:
@@ -511,6 +525,78 @@ async def photo_with_credit(chat_id: int, uid: int, prompt: str) -> None:
             await bot.send_message(
                 chat_id, "Не получилось сгенерировать фото, но оплата сохранена. "
                          "Напиши «фото описание» ещё раз, попробуй сформулировать иначе.")
+
+
+# ---------- Голосовые (ElevenLabs) ----------
+
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\uFE0F\u200d]+", re.UNICODE)
+
+
+def clean_for_voice(text: str) -> str:
+    """Убираем эмодзи, разметку и ссылки, обрезаем по концу предложения."""
+    text = _EMOJI_RE.sub("", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[*_`#~>]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > VOICE_MAX_CHARS:
+        cut = text[:VOICE_MAX_CHARS]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        text = cut[:end + 1] if end > 80 else cut
+    return text
+
+
+def voice_quota_take(uid: int) -> bool:
+    """Суточный лимит бесплатных озвучек для подписчиков (хранится в памяти, при перезапуске сбрасывается)."""
+    day = now_utc().strftime("%Y-%m-%d")
+    d, n = _voice_used.get(uid, (day, 0))
+    if d != day:
+        n = 0
+    if n >= VOICE_SUB_DAILY:
+        return False
+    _voice_used[uid] = (day, n + 1)
+    return True
+
+
+def voice_quota_give_back(uid: int) -> None:
+    d, n = _voice_used.get(uid, ("", 0))
+    if n > 0:
+        _voice_used[uid] = (d, n - 1)
+
+
+def voice_kb(aid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔊 Озвучить", callback_data=f"vo:{aid}")]])
+
+
+async def tts(text: str) -> bytes:
+    async with httpx.AsyncClient(timeout=60) as http:
+        r = await http.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}",
+            params={"output_format": "mp3_44100_128"},
+            headers={"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json"},
+            json={"text": text, "model_id": ELEVEN_MODEL,
+                  "voice_settings": {"stability": 0.45, "similarity_boost": 0.8, "style": 0.25}},
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(f"elevenlabs {r.status_code}: {r.text[:300]}")
+    return r.content
+
+
+async def deliver_voice(chat_id: int, text: str) -> bool:
+    """Озвучивает текст и отправляет голосовым. True, если получилось."""
+    clean = clean_for_voice(text)
+    if not re.search(r"\w", clean):
+        return False
+    try:
+        async with ChatActionSender.record_voice(bot=bot, chat_id=chat_id):
+            audio = await tts(clean)
+        await bot.send_voice(chat_id, BufferedInputFile(audio, "alisa.mp3"))
+        return True
+    except Exception as e:
+        log.exception("Ошибка озвучки")
+        await notify_admin(f"Ошибка озвучки: {type(e).__name__}: {e}", "tts")
+        return False
 
 
 async def update_memory(uid: int) -> None:
@@ -889,11 +975,45 @@ async def chat(m: types.Message):
             await m.answer("Что-то пошло не так, попробуй ещё раз чуть позже. Сообщение не списано.")
             return
 
-        await save_exchange(uid, source, text, ans)
+        aid = await save_exchange(uid, source, text, ans)
         if u["since_summary"] + 1 >= SUMMARY_EVERY:
             spawn(update_memory(uid))
 
-        await send_long(m, ans)
+        await send_long(m, ans, voice_kb(aid) if VOICE_ENABLED else None)
+
+
+# ============================ ГОЛОСОВЫЕ ============================
+
+@dp.callback_query(F.data.startswith("vo:"))
+async def cb_voice(c: types.CallbackQuery):
+    uid = c.from_user.id
+    if not VOICE_ENABLED:
+        await c.answer("Голосовые пока недоступны", show_alert=True)
+        return
+    raw = c.data.split(":", 1)[1]
+    row = await fetch_one(
+        "SELECT content FROM history WHERE id=? AND user_id=? AND role='assistant'",
+        (int(raw) if raw.isdigit() else -1, uid))
+    if not row:
+        await c.answer("Это сообщение уже устарело, озвучь более свежее", show_alert=True)
+        return
+    u = await get_user(uid)
+    if is_admin(uid) or has_sub(u):
+        if not is_admin(uid) and not voice_quota_take(uid):
+            await c.answer(f"На сегодня лимит озвучек ({VOICE_SUB_DAILY}) закончился", show_alert=True)
+            return
+        await c.answer("Записываю голосовое...")
+        ok = await deliver_voice(c.message.chat.id, row["content"])
+        if not ok:
+            if not is_admin(uid):
+                voice_quota_give_back(uid)
+            await c.message.answer("Не получилось озвучить, попробуй чуть позже.")
+        return
+    await bot.send_invoice(
+        chat_id=uid, title="Голосовое сообщение", description="Озвучка ответа Алисы",
+        payload=f"voice:{raw}", currency="XTR",
+        prices=[LabeledPrice(label="Голосовое", amount=VOICE_PRICE)])
+    await c.answer()
 
 
 # ============================ ОПЛАТА ============================
@@ -934,6 +1054,10 @@ async def pre_checkout(q: PreCheckoutQuery):
         oid = payload[6:]
         ok = oid.isdigit() and bool(await fetch_one(
             "SELECT id FROM photo_orders WHERE id=? AND user_id=?", (int(oid), q.from_user.id)))
+    elif payload.startswith("voice:"):
+        oid = payload[6:]
+        ok = VOICE_ENABLED and oid.isdigit() and bool(await fetch_one(
+            "SELECT id FROM history WHERE id=? AND user_id=? AND role='assistant'", (int(oid), q.from_user.id)))
     await q.answer(ok=ok, error_message=None if ok else "Товар недоступен, открой магазин заново.")
 
 
@@ -959,6 +1083,24 @@ async def on_payment(m: types.Message):
                 await photo_with_credit(m.chat.id, uid, order["prompt"])
             else:
                 await m.answer("Оплата прошла. Напиши «фото описание», и оно спишется с твоего запаса.")
+        elif payload.startswith("voice:"):
+            oid = payload[6:]
+            row = await fetch_one(
+                "SELECT content FROM history WHERE id=? AND user_id=? AND role='assistant'",
+                (int(oid) if oid.isdigit() else -1, uid))
+            ok = bool(row) and await deliver_voice(m.chat.id, row["content"])
+            if not ok:
+                charge = pay.telegram_payment_charge_id
+                try:
+                    await bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge)
+                    await execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge,))
+                    await m.answer("Не получилось записать голосовое, звёзды вернулись на твой счёт.")
+                except Exception:
+                    log.exception("Не удалось вернуть звёзды за голосовое")
+                    await notify_admin(
+                        f"Не удалось вернуть ⭐ за голосовое (user {uid}, charge {charge})", "voice_refund")
+                    await m.answer(f"Не получилось озвучить, а возврат автоматически не прошёл. "
+                                   f"Напиши в поддержку: {SUPPORT_CONTACT}")
         elif payload in PRODUCTS:
             product = PRODUCTS[payload]
             if "msgs" in product:
@@ -1046,8 +1188,9 @@ async def adm_stats(m: types.Message):
     rev_day = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0 AND created_at > ?",
                            ((ts - timedelta(days=1)).isoformat(),))
     ref = "есть" if await get_reference() else "нет (/genref или /setref)"
+    voice = "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)"
     await m.answer(f"Пользователей: {total}\nАктивны за 24ч: {day}\nПодписчиков: {subs}\n"
-                   f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)\nЭталон внешности: {ref}")
+                   f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)\nЭталон внешности: {ref}\nГолосовые: {voice}")
 
 
 @dp.message(Command("users"), ADMIN)
@@ -1189,7 +1332,8 @@ async def main():
         BotCommand(command="notify", description="Напоминания от Алисы вкл/выкл"),
         BotCommand(command="paysupport", description="Поддержка по оплате"),
     ])
-    log.info("Бот @%s запущен", BOT_USERNAME)
+    log.info("Бот @%s запущен. Голосовые: %s", BOT_USERNAME,
+             "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)")
 
     if NUDGES_ENABLED:
         spawn(nudge_loop())
