@@ -35,7 +35,8 @@ def env(name: str, default: str | None = None, required: bool = False) -> str | 
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", required=True)
 GROK_API_KEY = env("GROK_API_KEY", required=True)
-ADMIN_ID = "5044633928"
+# ИСПРАВЛЕНО: ADMIN_ID теперь число (раньше была строка, и сравнение с id никогда не срабатывало)
+ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
 DB_PATH = env("DB_PATH", "bot.db")
 CHAT_MODEL = env("CHAT_MODEL", "grok-4")
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
@@ -323,6 +324,8 @@ async def gen_image(prompt: str) -> bytes:
             json={"model": IMAGE_MODEL, "prompt": prompt, "n": 1},
         )
         log.info("image api status=%s", r.status_code)
+        if r.status_code >= 400:
+            log.error("image api error body: %s", r.text[:500])
         r.raise_for_status()
         url = r.json()["data"][0]["url"]
         img = await http.get(url)
@@ -605,15 +608,17 @@ async def chat(m: types.Message):
         u = await get_user(uid)
         admin = is_admin(uid)
 
+        # ИСПРАВЛЕНО: запрос на фото проверяется раньше имени,
+        # чтобы «Фото на балконе» не сохранялось как имя пользователя
+        photo = PHOTO_RE.match(text)
+        if photo:
+            await handle_photo(m, u, photo.group(2).strip())
+            return
+
         if u["awaiting_name"]:
             name = re.sub(r"\s+", " ", text)[:30]
             await set_fields(uid, name=name, awaiting_name=0)
             await m.answer(f"Приятно познакомиться, {name}! О чём поболтаем?")
-            return
-
-        photo = PHOTO_RE.match(text)
-        if photo:
-            await handle_photo(m, u, photo.group(2).strip())
             return
 
         if admin or has_sub(u):
