@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ import httpx
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
-    BotCommand, BufferedInputFile,
+    BotCommand, BufferedInputFile, ErrorEvent, FSInputFile,
     InlineKeyboardButton, InlineKeyboardMarkup,
     KeyboardButton, LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup,
 )
@@ -35,14 +36,19 @@ def env(name: str, default: str | None = None, required: bool = False) -> str | 
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", required=True)
 GROK_API_KEY = env("GROK_API_KEY", required=True)
-# ИСПРАВЛЕНО: ADMIN_ID теперь число (раньше была строка, и сравнение с id никогда не срабатывало)
 ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
+# На Railway подключи Volume в /data и задай DB_PATH=/data/bot.db, иначе база стирается при деплое
 DB_PATH = env("DB_PATH", "bot.db")
 CHAT_MODEL = env("CHAT_MODEL", "grok-4")
+# Модель для бесплатных сообщений и фоновой памяти. По умолчанию такая же, как CHAT_MODEL.
+# Чтобы снизить расходы, укажи в Railway более дешёвую модель xAI (точное имя смотри в документации xAI).
+CHAT_MODEL_FREE = env("CHAT_MODEL_FREE", CHAT_MODEL)
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
 SUPPORT_CONTACT = "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN"
 # Постоянная внешность Алисы — добавляется к каждому промпту для фото
 APPEARANCE = env("APPEARANCE", "adult woman, 23 years old, long dark hair, brown eyes, natural look")
+BACKUP_ENABLED = env("BACKUP_ENABLED", "1") == "1"
+NUDGES_ENABLED = env("NUDGES_ENABLED", "1") == "1"
 
 FREE_MESSAGES = 30          # бесплатных сообщений на пользователя
 HISTORY_IN_PROMPT = 12      # сколько последних сообщений уходит в модель
@@ -51,8 +57,10 @@ SUMMARY_EVERY = 20          # раз в N ответов обновляем «д
 BONUS_MESSAGES = 8
 BONUS_COOLDOWN_H = 20
 REFERRAL_REWARD = 10
+REFERRAL_MAX = 30           # максимум наград за приглашения на одного пользователя
 PHOTO_PRICE = 50
 FLOOD_SECONDS = 0.8
+NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 
 # Цены и наборы можно свободно менять
 PRODUCTS = {
@@ -67,6 +75,14 @@ SCENARIOS = {
     "evening": ("Вечер", "Сейчас уютный вечер, вы вдвоём, разговор тёплый и неторопливый, с лёгкой романтикой."),
     "spicy": ("Откровенно", "Тон более откровенный и флиртующий: взрослый разговор между двумя взрослыми людьми, без грубости."),
 }
+
+NUDGES = [
+    "Как твой день прошёл? Я тут немного скучаю 🙂",
+    "Привет! Давно не болтали. Чем занят?",
+    "Вспомнила про тебя. Как дела?",
+    "Эй, давно тебя не слышала. Как жизнь? 😊",
+    "Мне стало интересно, как ты там. Расскажешь?",
+]
 
 PERSONA = (
     "Ты Алиса, тебе 23 года. Ты живая, естественная собеседница, а не ассистент. "
@@ -96,6 +112,11 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="👥 Друзья")],
 ], resize_keyboard=True)
 
+WELCOME_TIPS = (
+    "Можно просто писать мне. А если хочешь фото, напиши «фото» и описание, "
+    "например «фото в красном платье на балконе»."
+)
+
 
 # ============================ ОБЪЕКТЫ ============================
 
@@ -107,10 +128,23 @@ db: aiosqlite.Connection | None = None
 BOT_USERNAME = ""
 _locks: dict[int, asyncio.Lock] = {}
 _bg_tasks: set[asyncio.Task] = set()
+_alert_last: dict[str, float] = {}
 
 
 def user_lock(uid: int) -> asyncio.Lock:
     return _locks.setdefault(uid, asyncio.Lock())
+
+
+async def notify_admin(text: str, key: str = "general") -> None:
+    """Сообщение админу об ошибке. Не чаще раза в 5 минут на каждый тип, чтобы не заспамить."""
+    now = time.monotonic()
+    if now - _alert_last.get(key, -1e9) < 300:
+        return
+    _alert_last[key] = now
+    try:
+        await bot.send_message(ADMIN_ID, ("⚠️ " + text)[:3500])
+    except Exception:
+        log.exception("Не удалось отправить алерт админу")
 
 
 # ============================ БАЗА ДАННЫХ ============================
@@ -133,6 +167,8 @@ CREATE TABLE IF NOT EXISTS users (
     memory_note TEXT NOT NULL DEFAULT '',
     since_summary INTEGER NOT NULL DEFAULT 0,
     banned INTEGER NOT NULL DEFAULT 0,
+    last_nudge TEXT,
+    notify INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
 );
@@ -161,7 +197,7 @@ CREATE TABLE IF NOT EXISTS photo_orders (
 USER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "scenario", "name",
     "awaiting_name", "subscription_until", "bonus_claimed", "adult", "referrer",
-    "ref_rewarded", "memory_note", "since_summary", "banned",
+    "ref_rewarded", "memory_note", "since_summary", "banned", "last_nudge", "notify",
 }
 COUNTER_FIELDS = {"messages", "paid", "photo_credits", "relationship", "since_summary"}
 
@@ -197,6 +233,16 @@ async def scalar(sql: str, args: tuple = ()):
     async with db.execute(sql, args) as cur:
         row = await cur.fetchone()
     return row[0] if row and row[0] is not None else 0
+
+
+async def migrate() -> None:
+    """Добавляет новые колонки в уже существующую базу."""
+    cols = {r["name"] for r in await fetch_all("PRAGMA table_info(users)")}
+    if "last_nudge" not in cols:
+        await db.execute("ALTER TABLE users ADD COLUMN last_nudge TEXT")
+    if "notify" not in cols:
+        await db.execute("ALTER TABLE users ADD COLUMN notify INTEGER NOT NULL DEFAULT 1")
+    await db.commit()
 
 
 async def get_user(uid: int) -> dict:
@@ -311,7 +357,24 @@ def prompt_allowed(p: str) -> bool:
     return all(int(x.group(1)) >= 18 for x in _AGE.finditer(p))
 
 
+# «фото в красном платье», «photo on a beach»
 PHOTO_RE = re.compile(r"^(фото|photo)\b[\s:,\-]*(.*)$", re.I | re.S)
+# «скинь фото», «покажи селфи на пляже», «хочу свою фотку»
+PHOTO_ASK_RE = re.compile(
+    r"^(?:а\s+)?(?:скинь|пришли|отправь|сделай|покажи|дай|хочу|можно|можешь\s+прислать)\s+"
+    r"(?:мне\s+)?(?:свое\s+|своё\s+|свою\s+)?(?:фото|фотку|фотографию|селфи|photo|selfie)\b[\s:,\-]*(.*)$",
+    re.I | re.S)
+
+
+def parse_photo_request(text: str) -> str | None:
+    """Возвращает описание для фото, если сообщение похоже на запрос фото, иначе None."""
+    mt = PHOTO_RE.match(text)
+    if mt:
+        return mt.group(2).strip()
+    mt = PHOTO_ASK_RE.match(text)
+    if mt:
+        return mt.group(1).strip()
+    return None
 
 
 # ============================ ВНЕШНИЕ API ============================
@@ -326,7 +389,7 @@ async def gen_image(prompt: str) -> bytes:
         log.info("image api status=%s", r.status_code)
         if r.status_code >= 400:
             log.error("image api error body: %s", r.text[:500])
-        r.raise_for_status()
+            raise RuntimeError(f"image api {r.status_code}: {r.text[:300]}")
         url = r.json()["data"][0]["url"]
         img = await http.get(url)
         img.raise_for_status()
@@ -339,8 +402,9 @@ async def deliver_photo(chat_id: int, prompt: str) -> bool:
             data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic")
         await bot.send_photo(chat_id, BufferedInputFile(data, "photo.jpg"))
         return True
-    except Exception:
+    except Exception as e:
         log.exception("Ошибка генерации фото")
+        await notify_admin(f"Ошибка генерации фото: {type(e).__name__}: {e}", "photo")
         return False
 
 
@@ -366,12 +430,69 @@ async def update_memory(uid: int) -> None:
             f"Текущая заметка: {u['memory_note'] or 'пусто'}\n\nНовый фрагмент диалога:\n{dialog}"
         )
         r = await llm.chat.completions.create(
-            model=CHAT_MODEL, messages=[{"role": "user", "content": prompt}], temperature=0.3)
+            model=CHAT_MODEL_FREE, messages=[{"role": "user", "content": prompt}], temperature=0.3)
         note = (r.choices[0].message.content or "").strip()[:800]
         if note:
             await set_fields(uid, memory_note=note, since_summary=0)
     except Exception:
         log.exception("Ошибка обновления памяти")
+
+
+# ============================ ФОНОВЫЕ ЗАДАЧИ ============================
+
+async def nudge_loop() -> None:
+    """Алиса пишет первой тем, кто молчит больше суток. Один раз за период тишины, только днём (UTC 8-20)."""
+    while True:
+        try:
+            await asyncio.sleep(1800)
+            ts = now_utc()
+            if not (8 <= ts.hour < 20):
+                continue
+            rows = await fetch_all(
+                "SELECT id, name FROM users WHERE adult=1 AND banned=0 AND notify=1 "
+                "AND last_seen < ? AND last_seen > ? "
+                "AND (last_nudge IS NULL OR last_nudge < last_seen) LIMIT 30",
+                ((ts - timedelta(hours=NUDGE_AFTER_H)).isoformat(), (ts - timedelta(days=7)).isoformat()))
+            for r in rows:
+                text = random.choice(NUDGES)
+                if r["name"]:
+                    text = f"{r['name']}, {text[0].lower()}{text[1:]}"
+                text += "\n\n/notify — отключить такие сообщения"
+                try:
+                    await bot.send_message(r["id"], text)
+                except Exception:
+                    pass  # пользователь заблокировал бота и т.п.
+                await set_fields(r["id"], last_nudge=now_utc().isoformat())
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Ошибка рассылки напоминаний")
+
+
+async def backup_loop() -> None:
+    """Раз в сутки присылает админу копию базы."""
+    await asyncio.sleep(300)
+    path = "/tmp/bot_backup.db"
+    while True:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            await db.commit()
+            await db.execute(f"VACUUM INTO '{path}'")
+            await bot.send_document(ADMIN_ID, FSInputFile(path), caption=f"Бэкап базы {now_utc():%Y-%m-%d %H:%M} UTC")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception("Ошибка бэкапа")
+            await notify_admin(f"Ошибка бэкапа: {type(e).__name__}: {e}", "backup")
+        finally:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        await asyncio.sleep(86400)
 
 
 # ============================ MIDDLEWARE ============================
@@ -426,6 +547,13 @@ dp.message.outer_middleware(guard)
 dp.callback_query.outer_middleware(guard)
 
 
+@dp.error()
+async def on_error(event: ErrorEvent):
+    log.error("Необработанная ошибка: %s", event.exception, exc_info=event.exception)
+    await notify_admin(f"Необработанная ошибка: {type(event.exception).__name__}: {event.exception}", "unhandled")
+    return True
+
+
 # ============================ КОМАНДЫ И КНОПКИ ============================
 
 @dp.message(Command("start"))
@@ -461,12 +589,15 @@ async def age_cb(c: types.CallbackQuery):
     if c.data == "age:yes":
         await set_fields(uid, adult=1, awaiting_name=0 if u["name"] else 1)
         if u["referrer"] and not u["ref_rewarded"]:
-            await add_to(u["referrer"], "paid", REFERRAL_REWARD)
+            rewarded = await scalar(
+                "SELECT COUNT(*) FROM users WHERE referrer=? AND ref_rewarded=1", (u["referrer"],))
             await set_fields(uid, ref_rewarded=1)
-            try:
-                await bot.send_message(u["referrer"], f"Твой друг присоединился: +{REFERRAL_REWARD} сообщений 🎁")
-            except Exception:
-                pass
+            if rewarded < REFERRAL_MAX:
+                await add_to(u["referrer"], "paid", REFERRAL_REWARD)
+                try:
+                    await bot.send_message(u["referrer"], f"Твой друг присоединился: +{REFERRAL_REWARD} сообщений 🎁")
+                except Exception:
+                    pass
         try:
             await c.message.edit_reply_markup(reply_markup=None)
         except Exception:
@@ -500,6 +631,15 @@ async def cmd_reset(m: types.Message):
         await execute("DELETE FROM history WHERE user_id=?", (uid,))
         await set_fields(uid, memory_note="", since_summary=0)
     await m.answer("Начнём с чистого листа.")
+
+
+@dp.message(Command("notify"))
+async def cmd_notify(m: types.Message):
+    uid = m.from_user.id
+    u = await get_user(uid)
+    new = 0 if u["notify"] else 1
+    await set_fields(uid, notify=new)
+    await m.answer("Хорошо, буду иногда писать первой 🙂" if new else "Ок, первой писать не буду.")
 
 
 @dp.message(Command("paysupport"))
@@ -608,18 +748,21 @@ async def chat(m: types.Message):
         u = await get_user(uid)
         admin = is_admin(uid)
 
-        # ИСПРАВЛЕНО: запрос на фото проверяется раньше имени,
-        # чтобы «Фото на балконе» не сохранялось как имя пользователя
-        photo = PHOTO_RE.match(text)
-        if photo:
-            await handle_photo(m, u, photo.group(2).strip())
+        # Запрос на фото проверяется раньше имени, чтобы «Фото на балконе» не стало именем
+        photo_prompt = parse_photo_request(text)
+        if photo_prompt is not None:
+            await handle_photo(m, u, photo_prompt)
             return
 
         if u["awaiting_name"]:
-            name = re.sub(r"\s+", " ", text)[:30]
-            await set_fields(uid, name=name, awaiting_name=0)
-            await m.answer(f"Приятно познакомиться, {name}! О чём поболтаем?")
-            return
+            looks_like_name = len(text) <= 30 and "?" not in text and len(text.split()) <= 3
+            if looks_like_name:
+                name = re.sub(r"\s+", " ", text)[:30]
+                await set_fields(uid, name=name, awaiting_name=0)
+                await m.answer(f"Приятно познакомиться, {name}! О чём поболтаем?\n\n{WELCOME_TIPS}")
+                return
+            # Человек сразу начал говорить, а не назвал имя: продолжаем как обычный чат
+            await set_fields(uid, awaiting_name=0)
 
         if admin or has_sub(u):
             source = "unlimited"
@@ -632,17 +775,19 @@ async def chat(m: types.Message):
                            reply_markup=shop_kb())
             return
 
+        model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
         history = await load_history(uid, HISTORY_IN_PROMPT)
         messages = ([{"role": "system", "content": build_system(u)}]
                     + history + [{"role": "user", "content": text}])
         try:
             async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
-                r = await llm.chat.completions.create(model=CHAT_MODEL, messages=messages, temperature=0.87)
+                r = await llm.chat.completions.create(model=model, messages=messages, temperature=0.87)
             ans = (r.choices[0].message.content or "").strip()
             if not ans:
                 raise ValueError("пустой ответ модели")
-        except Exception:
+        except Exception as e:
             log.exception("Ошибка LLM")
+            await notify_admin(f"Ошибка LLM ({model}): {type(e).__name__}: {e}", "llm")
             await m.answer("Что-то пошло не так, попробуй ещё раз чуть позже. Сообщение не списано.")
             return
 
@@ -731,6 +876,7 @@ async def on_payment(m: types.Message):
                 await m.answer(f"Подписка активна до {until:%d.%m.%Y %H:%M} (UTC)")
         else:
             log.error("Неизвестный payload оплаты: %s (user %s)", payload, uid)
+            await notify_admin(f"Неизвестный payload оплаты: {payload} (user {uid})", "payload")
             await m.answer(f"Оплата получена, но товар не распознан. Напиши в поддержку: {SUPPORT_CONTACT}")
 
 
@@ -759,7 +905,7 @@ async def adm_users(m: types.Message):
         await m.answer("Нет пользователей")
         return
     text = "\n".join(f"{r['id']} | {r['messages']} бесп | {r['paid']} плат | {r['last_seen'][:16]}" for r in rows)
-    await m.answer("Пользователи:\n" + text + "\n\n/user ID, /history ID, /payments ID")
+    await m.answer("Пользователи:\n" + text + "\n\n/user ID, /history ID, /payments ID, /give ID N")
 
 
 @dp.message(Command("user"), ADMIN)
@@ -795,6 +941,20 @@ async def adm_payments(m: types.Message, command: CommandObject):
                            "WHERE user_id=? ORDER BY created_at DESC LIMIT 10", (int(arg),))
     await m.answer("\n".join(f"{r['payload']} {r['stars']}⭐ {'(возврат)' if r['refunded'] else ''}\n{r['charge_id']}"
                              for r in rows) or "Платежей нет")
+
+
+@dp.message(Command("give"), ADMIN)
+async def adm_give(m: types.Message, command: CommandObject):
+    parts = (command.args or "").split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].lstrip("-").isdigit():
+        await m.answer("Использование: /give USER_ID КОЛИЧЕСТВО_СООБЩЕНИЙ")
+        return
+    uid, amount = int(parts[0]), int(parts[1])
+    if not await fetch_one("SELECT id FROM users WHERE id=?", (uid,)):
+        await m.answer("Пользователь не найден")
+        return
+    await add_to(uid, "paid", amount)
+    await m.answer(f"Начислено {amount} платных сообщений пользователю {uid}")
 
 
 @dp.message(Command("refund"), ADMIN)
@@ -853,11 +1013,20 @@ async def unknown_command(m: types.Message):
 
 async def main():
     global db, BOT_USERNAME
+
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    if os.getenv("RAILWAY_ENVIRONMENT") and not os.path.isabs(DB_PATH):
+        log.warning("DB_PATH=%s не на постоянном томе: база сотрётся при деплое. "
+                    "Подключи Volume в /data и задай DB_PATH=/data/bot.db", DB_PATH)
+
     db = await aiosqlite.connect(DB_PATH)
     db.row_factory = aiosqlite.Row
     await db.execute("PRAGMA journal_mode=WAL")
     await db.executescript(SCHEMA)
     await db.commit()
+    await migrate()
 
     BOT_USERNAME = (await bot.get_me()).username
     await bot.set_my_commands([
@@ -865,12 +1034,21 @@ async def main():
         BotCommand(command="name", description="Сменить имя"),
         BotCommand(command="reset", description="Очистить историю"),
         BotCommand(command="ref", description="Пригласить друзей"),
+        BotCommand(command="notify", description="Напоминания от Алисы вкл/выкл"),
         BotCommand(command="paysupport", description="Поддержка по оплате"),
     ])
     log.info("Бот @%s запущен", BOT_USERNAME)
+
+    if NUDGES_ENABLED:
+        spawn(nudge_loop())
+    if BACKUP_ENABLED:
+        spawn(backup_loop())
+
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        for t in list(_bg_tasks):
+            t.cancel()
         await db.close()
 
 
