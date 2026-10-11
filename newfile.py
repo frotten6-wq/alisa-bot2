@@ -1,5 +1,6 @@
 """Telegram-бот «Алиса»: aiogram 3 + Grok (xAI) + Telegram Stars."""
 import asyncio
+import base64
 import logging
 import os
 import random
@@ -41,11 +42,14 @@ ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
 DB_PATH = env("DB_PATH", "bot.db")
 CHAT_MODEL = env("CHAT_MODEL", "grok-4")
 # Модель для бесплатных сообщений и фоновой памяти. По умолчанию такая же, как CHAT_MODEL.
-# Чтобы снизить расходы, укажи в Railway более дешёвую модель xAI (точное имя смотри в документации xAI).
 CHAT_MODEL_FREE = env("CHAT_MODEL_FREE", CHAT_MODEL)
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
+# Модель для генерации по референсу (/v1/images/edits). Если вернёт ошибку про модель,
+# попробуй значения grok-imagine-image или grok-imagine-image-2.0
+IMAGE_EDIT_MODEL = env("IMAGE_EDIT_MODEL", IMAGE_MODEL)
 SUPPORT_CONTACT = "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN"
-# Постоянная внешность Алисы — добавляется к каждому промпту для фото
+# Внешность Алисы текстом. Используется для эталонного фото (/genref) и как запасной вариант,
+# если эталона нет или генерация по референсу не сработала
 APPEARANCE = env("APPEARANCE", "adult woman, 23 years old, long dark hair, brown eyes, natural look")
 BACKUP_ENABLED = env("BACKUP_ENABLED", "1") == "1"
 NUDGES_ENABLED = env("NUDGES_ENABLED", "1") == "1"
@@ -116,6 +120,9 @@ WELCOME_TIPS = (
     "Можно просто писать мне. А если хочешь фото, напиши «фото» и описание, "
     "например «фото в красном платье на балконе»."
 )
+
+REFUSED_TEXT = "Генератор отклонил этот запрос по своим правилам модерации. Попробуй описать иначе."
+FAILED_TEXT = "Не получилось сгенерировать фото, попробуй позже или опиши иначе."
 
 
 # ============================ ОБЪЕКТЫ ============================
@@ -191,6 +198,10 @@ CREATE TABLE IF NOT EXISTS photo_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     prompt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    value BLOB
 );
 """
 
@@ -287,6 +298,21 @@ async def save_exchange(uid: int, source: str, user_text: str, answer: str) -> N
     await db.commit()
 
 
+async def get_reference() -> bytes | None:
+    """Эталонное фото Алисы (хранится в базе)."""
+    async with db.execute("SELECT value FROM kv WHERE key='reference'") as cur:
+        row = await cur.fetchone()
+    return bytes(row[0]) if row and row[0] else None
+
+
+async def set_reference(data: bytes) -> None:
+    await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('reference', ?)", (data,))
+
+
+async def clear_reference() -> None:
+    await execute("DELETE FROM kv WHERE key='reference'")
+
+
 # ============================ ХЕЛПЕРЫ ============================
 
 def is_admin(uid: int) -> bool:
@@ -379,43 +405,112 @@ def parse_photo_request(text: str) -> str | None:
 
 # ============================ ВНЕШНИЕ API ============================
 
+class ImageRefused(Exception):
+    """Генератор отклонил запрос по правилам модерации."""
+
+
+_REFUSAL_HINTS = ("moderation", "safety", "policy", "not allowed", "violat", "prohibited")
+
+
+def _check_image_response(r: httpx.Response) -> None:
+    if r.status_code < 400:
+        return
+    body = r.text[:500]
+    log.error("image api error %s: %s", r.status_code, body)
+    if r.status_code in (400, 403, 422) and any(h in body.lower() for h in _REFUSAL_HINTS):
+        raise ImageRefused(body[:200])
+    raise RuntimeError(f"image api {r.status_code}: {body[:300]}")
+
+
+async def _extract_image(http: httpx.AsyncClient, r: httpx.Response) -> bytes:
+    payload = r.json()
+    items = payload.get("data") or [payload]
+    item = items[0]
+    if item.get("url"):
+        img = await http.get(item["url"])
+        img.raise_for_status()
+        return img.content
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"])
+    raise RuntimeError(f"image api: в ответе нет картинки: {str(payload)[:200]}")
+
+
 async def gen_image(prompt: str) -> bytes:
-    async with httpx.AsyncClient(timeout=90) as http:
+    """Обычная генерация по тексту."""
+    async with httpx.AsyncClient(timeout=120) as http:
         r = await http.post(
             "https://api.x.ai/v1/images/generations",
             headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
             json={"model": IMAGE_MODEL, "prompt": prompt, "n": 1},
         )
-        log.info("image api status=%s", r.status_code)
-        if r.status_code >= 400:
-            log.error("image api error body: %s", r.text[:500])
-            raise RuntimeError(f"image api {r.status_code}: {r.text[:300]}")
-        url = r.json()["data"][0]["url"]
-        img = await http.get(url)
-        img.raise_for_status()
-        return img.content
+        log.info("image api (generations) status=%s", r.status_code)
+        _check_image_response(r)
+        return await _extract_image(http, r)
 
 
-async def deliver_photo(chat_id: int, prompt: str) -> bool:
+async def edit_image(prompt: str, reference: bytes) -> bytes:
+    """Генерация по референсу: та же внешность, новая обстановка."""
+    data_uri = "data:image/jpeg;base64," + base64.b64encode(reference).decode()
+    async with httpx.AsyncClient(timeout=120) as http:
+        r = await http.post(
+            "https://api.x.ai/v1/images/edits",
+            headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
+            json={"model": IMAGE_EDIT_MODEL, "prompt": prompt,
+                  "image": {"url": data_uri, "type": "image_url"}},
+        )
+        log.info("image api (edits) status=%s", r.status_code)
+        _check_image_response(r)
+        return await _extract_image(http, r)
+
+
+def build_edit_prompt(prompt: str) -> str:
+    return (
+        "Create a new photorealistic photo of the same woman as in the reference image: "
+        "identical face, hair, eye color and skin tone, adult woman. "
+        f"New scene, outfit and pose: {prompt}. Natural lighting, high detail."
+    )
+
+
+async def deliver_photo(chat_id: int, prompt: str) -> str:
+    """Возвращает 'ok', 'refused' (отклонено модерацией) или 'error'."""
     try:
         async with ChatActionSender.upload_photo(bot=bot, chat_id=chat_id):
-            data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic")
+            data = None
+            ref = await get_reference()
+            if ref:
+                try:
+                    data = await edit_image(build_edit_prompt(prompt), ref)
+                except ImageRefused:
+                    raise
+                except Exception as e:
+                    log.exception("Ошибка генерации по референсу, откат на обычную генерацию")
+                    await notify_admin(
+                        f"Генерация по референсу не сработала, использую обычную: {type(e).__name__}: {e}", "edit")
+            if data is None:
+                data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic")
         await bot.send_photo(chat_id, BufferedInputFile(data, "photo.jpg"))
-        return True
+        return "ok"
+    except ImageRefused:
+        log.warning("Запрос на фото отклонён модерацией: %s", prompt[:100])
+        return "refused"
     except Exception as e:
         log.exception("Ошибка генерации фото")
         await notify_admin(f"Ошибка генерации фото: {type(e).__name__}: {e}", "photo")
-        return False
+        return "error"
 
 
 async def photo_with_credit(chat_id: int, uid: int, prompt: str) -> None:
-    """Списываем оплаченный кредит; если генерация упала, кредит возвращается."""
+    """Списываем оплаченный кредит; если генерация не удалась, кредит возвращается."""
     await add_to(uid, "photo_credits", -1)
-    if not await deliver_photo(chat_id, prompt):
+    result = await deliver_photo(chat_id, prompt)
+    if result != "ok":
         await add_to(uid, "photo_credits", 1)
-        await bot.send_message(
-            chat_id, "Не получилось сгенерировать фото, но оплата сохранена. "
-                     "Напиши «фото описание» ещё раз, попробуй сформулировать иначе.")
+        if result == "refused":
+            await bot.send_message(chat_id, REFUSED_TEXT + " Оплата сохранена, фото останется в запасе.")
+        else:
+            await bot.send_message(
+                chat_id, "Не получилось сгенерировать фото, но оплата сохранена. "
+                         "Напиши «фото описание» ещё раз, попробуй сформулировать иначе.")
 
 
 async def update_memory(uid: int) -> None:
@@ -728,8 +823,11 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         return
     if is_admin(uid) or has_sub(u):
         await m.answer("Генерирую...")
-        if not await deliver_photo(m.chat.id, prompt):
-            await m.answer("Не получилось сгенерировать фото, попробуй позже или опиши иначе.")
+        result = await deliver_photo(m.chat.id, prompt)
+        if result == "refused":
+            await m.answer(REFUSED_TEXT)
+        elif result == "error":
+            await m.answer(FAILED_TEXT)
     elif u["photo_credits"] > 0:
         await m.answer("Генерирую...")
         await photo_with_credit(m.chat.id, uid, prompt)
@@ -885,6 +983,59 @@ async def on_payment(m: types.Message):
 ADMIN = F.from_user.id == ADMIN_ID
 
 
+async def _save_reference(m: types.Message, photo: types.PhotoSize) -> None:
+    buf = await bot.download(photo)
+    data = buf.read()
+    await set_reference(data)
+    await m.answer("Эталонное фото Алисы сохранено. Теперь все фото будут генерироваться с этой внешностью. "
+                   "Проверь: «фото на пляже». Убрать эталон: /delref")
+
+
+# Фото с подписью /setref
+@dp.message(F.photo, F.caption.startswith("/setref"), ADMIN)
+async def adm_setref_caption(m: types.Message):
+    await _save_reference(m, m.photo[-1])
+
+
+# Ответ командой /setref на сообщение с фото
+@dp.message(Command("setref"), ADMIN)
+async def adm_setref_reply(m: types.Message):
+    src = m.reply_to_message
+    if src and src.photo:
+        await _save_reference(m, src.photo[-1])
+    elif m.photo:
+        await _save_reference(m, m.photo[-1])
+    else:
+        await m.answer("Отправь фото с подписью /setref или ответь командой /setref на фото. "
+                       "Фото должно быть выдуманной взрослой девушкой, не реальным человеком.")
+
+
+@dp.message(Command("genref"), ADMIN)
+async def adm_genref(m: types.Message, command: CommandObject):
+    extra = (command.args or "").strip() or "portrait, soft natural light, neutral background, looking at camera"
+    if not prompt_allowed(extra):
+        await m.answer("Такое я генерировать не буду.")
+        return
+    await m.answer("Генерирую эталон...")
+    try:
+        data = await gen_image(f"{APPEARANCE}, {extra}, photorealistic")
+    except ImageRefused:
+        await m.answer(REFUSED_TEXT)
+        return
+    except Exception as e:
+        await m.answer(f"Ошибка генерации: {e}")
+        return
+    await bot.send_photo(
+        m.chat.id, BufferedInputFile(data, "ref.jpg"),
+        caption="Нравится? Ответь на это фото командой /setref. Не нравится: снова /genref (можно с описанием).")
+
+
+@dp.message(Command("delref"), ADMIN)
+async def adm_delref(m: types.Message):
+    await clear_reference()
+    await m.answer("Эталон удалён. Фото снова генерируются только по текстовому описанию внешности.")
+
+
 @dp.message(Command("stats"), ADMIN)
 async def adm_stats(m: types.Message):
     ts = now_utc()
@@ -894,8 +1045,9 @@ async def adm_stats(m: types.Message):
     rev = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0")
     rev_day = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0 AND created_at > ?",
                            ((ts - timedelta(days=1)).isoformat(),))
+    ref = "есть" if await get_reference() else "нет (/genref или /setref)"
     await m.answer(f"Пользователей: {total}\nАктивны за 24ч: {day}\nПодписчиков: {subs}\n"
-                   f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)")
+                   f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)\nЭталон внешности: {ref}")
 
 
 @dp.message(Command("users"), ADMIN)
