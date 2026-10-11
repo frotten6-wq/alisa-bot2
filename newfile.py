@@ -86,74 +86,115 @@ async def toggle_voice(m: types.Message):
 @dp.message(F.text)
 async def chat(m: types.Message):
     u = get_user(m.from_user.id)
+
     if u["messages"] >= 30 and u["paid"] <= 0:
-        await m.answer("Бесплатные закончились")
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="20 сообщений — 15⭐", callback_data="pay_20")],
+            [InlineKeyboardButton(text="50 сообщений — 35⭐", callback_data="pay_50")]
+        ])
+        await m.answer("Бесплатные закончились", reply_markup=ikb)
         return
 
     if u["messages"] < 30:
         u["messages"] += 1
     else:
         u["paid"] -= 1
-    u["relationship"] = min(100, u["relationship"] + 1)
 
+    u["relationship"] = min(100, u["relationship"] + 1)
     u["history"].append({"role": "user", "content": m.text})
     if len(u["history"]) > 8:
         u["history"] = u["history"][-8:]
 
     await bot.send_chat_action(m.chat.id, "typing")
-    await asyncio.sleep(0.7)
+    await asyncio.sleep(0.6)
 
     name_part = f" Пользователя зовут {u['name']}." if u["name"] else ""
     system = (
-        "Ты Алиса, 23 года. Живая, естественная, с лёгким юмором. "
-        "Поддерживаешь разговор, иногда сама задаёшь вопросы. "
-        "Если пишут обычно — интересно общаешься. Если откровенно — подстраиваешься. "
+        "Ты Алиса, 23 года. Живая и естественная. "
+        "Поддерживаешь разговор. Если пишут обычно — с лёгким флиртом. "
+        "Если откровенно — подстраиваешься. "
+        "Никогда не говори, что не можешь отправлять голосовые или фото. "
         "Эмодзи почти не используй."
         + name_part + f" Стадия: {get_level(u['relationship'])}."
     )
 
     messages = [{"role": "system", "content": system}] + u["history"]
+
     try:
-        r = client.chat.completions.create(model="grok-4", messages=messages, temperature=0.85)
+        r = client.chat.completions.create(
+            model="grok-4",
+            messages=messages,
+            temperature=0.85
+        )
         answer = r.choices[0].message.content
         u["history"].append({"role": "assistant", "content": answer})
 
-        if u["voice_mode"]:
+        if u.get("voice_mode"):
             if u["paid"] < 15:
-                await m.answer("Для голосового ответа нужно 15⭐")
+                ikb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Купить 20 сообщений — 15⭐", callback_data="pay_20")],
+                    [InlineKeyboardButton(text="Купить 50 сообщений — 35⭐", callback_data="pay_50")]
+                ])
+                await m.answer("Для голосового ответа нужно 15 платных сообщений", reply_markup=ikb)
                 await m.answer(answer)
                 return
-            u["paid"] -= 15
-            filename = f"voice_{m.from_user.id}.mp3"
-            await generate_voice(answer, filename)
-            await m.answer_voice(FSInputFile(filename))
-            os.remove(filename)
+
+            try:
+                u["paid"] -= 15
+                filename = f"v_{m.from_user.id}.mp3"
+                await generate_voice(answer, filename)
+                await m.answer_voice(FSInputFile(filename))
+                os.remove(filename)
+                return
+            except Exception as ve:
+                print("Voice error:", ve)
+                await m.answer(answer)
+                return
         else:
             await m.answer(answer)
-    except:
+
+    except Exception as e:
+        print("Chat error:", e)
         await m.answer("Секунду...")
 
 @dp.message(F.photo)
 async def photo_react(m: types.Message):
     u = get_user(m.from_user.id)
     if u["paid"] < 25:
-        await m.answer("Реакция на фото — 25⭐")
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Купить сообщения", callback_data="pay_20")]
+        ])
+        await m.answer("Реакция на фото — 25⭐", reply_markup=ikb)
         return
     u["paid"] -= 25
-    await m.answer("Смотрю... расскажи подробнее?")
+    await m.answer("Смотрю фото... расскажи, что на нём?")
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def pay(c: types.CallbackQuery):
     amount = 20 if c.data == "pay_20" else 50
     price = 15 if amount == 20 else 35
-    await bot.send_invoice(c.from_user.id, f"{amount} сообщений", "Пакет", f"buy_{amount}", "XTR", [LabeledPrice(label="x", amount=price)])
+    await bot.send_invoice(
+        c.from_user.id,
+        f"{amount} сообщений",
+        "Пакет сообщений",
+        f"buy_{amount}",
+        "XTR",
+        [LabeledPrice(label="Пакет", amount=price)]
+    )
     await c.answer()
 
 @dp.callback_query(F.data.startswith("gift_"))
 async def gift(c: types.CallbackQuery):
     rel = 5 if "5" in c.data else 20
     price = 15 if rel == 5 else 60
-    await bot.send_invoice(c.from_user.id, "Подарок", "Для Алисы", f"gift_{rel}", "XTR", [LabeledPrice(label="x", amount=price)])
+    await bot.send_invoice(
+        c.from_user.id,
+        "Подарок",
+        "Для Алисы",
+        f"gift_{rel}",
+        "XTR",
+        [LabeledPrice(label="Подарок", amount=price)]
+    )
     await c.answer()
 
 @dp.pre_checkout_query()
@@ -166,9 +207,10 @@ async def success_pay(m: types.Message):
     u = get_user(m.from_user.id)
     if p.startswith("buy_"):
         u["paid"] += int(p.split("_")[1])
-        await m.answer("Сообщения добавлены")
+        await m.answer(f"Добавлено {p.split('_')[1]} сообщений")
     else:
-        u["relationship"] = min(100, u["relationship"] + int(p.split("_")[1]))
+        add = int(p.split("_")[1])
+        u["relationship"] = min(100, u["relationship"] + add)
         await m.answer("Спасибо за подарок")
 
 async def main():
