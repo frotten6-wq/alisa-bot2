@@ -7,8 +7,8 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, Message
 from openai import OpenAI
 
 # ====================== НАСТРОЙКИ ======================
-TELEGRAM_TOKEN = "СЮДА_ТВОЙ_ТОКЕН"
-GROK_API_KEY = "СЮДА_ТВОЙ_КЛЮЧ_GROK"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROK_API_KEY = os.getenv("GROK_API_KEY")
 
 client = OpenAI(
     api_key=GROK_API_KEY,
