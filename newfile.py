@@ -12,7 +12,6 @@ from aiogram.types import (
 from openai import OpenAI
 from elevenlabs.client import ElevenLabs
 
-# ==================== НАСТРОЙКИ ====================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROK_API_KEY = os.getenv("GROK_API_KEY")
 ELEVEN_API_KEY = "sk_0180bbc187eaee0d39c2649275619f8412183fbc6c472d59"
@@ -23,22 +22,30 @@ eleven = ElevenLabs(api_key=ELEVEN_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# ==================== ДАННЫЕ ====================
 users = {}
 logs = []
+
+ALISA_PERSONA = """Ты Алиса, 23 года. 
+Живая, немного дерзкая, с чувством юмора. 
+Общаешься естественно, как в мессенджере. 
+Поддерживаешь разговор, иногда сама задаёшь вопросы и проявляешь интерес. 
+Если человек пишет обычно — будь интересной собеседницей с лёгким флиртом. 
+Если начинает писать откровенно — плавно подстраивайся и становись более открытой. 
+Никогда не отказывай резко и не читай нотации. 
+Эмодзи используй очень редко. 
+Не будь слишком правильной."""
 
 def get_user(uid: int) -> dict:
     if uid not in users:
         users[uid] = {
             "messages": 0,
-            "paid_messages": 0,
-            "relationship": 0,
+            "paid": 0,
+            "relationship": 10,
             "voice_mode": False,
             "name": None,
             "history": [],
             "last_answer": "",
-            "photo_prompt": "",
-            "joined": datetime.now().isoformat()
+            "photo_prompt": ""
         }
     return users[uid]
 
@@ -46,11 +53,18 @@ def is_admin(uid: int) -> bool:
     return uid == ADMIN_ID
 
 def add_log(text: str):
-    logs.append(f"[{datetime.now().strftime('%H:%M')}] {text}")
-    if len(logs) > 50:
+    logs.append(f"{datetime.now().strftime('%H:%M')} {text}")
+    if len(logs) > 40:
         logs.pop(0)
 
-# ==================== КЛАВИАТУРА ====================
+def get_relationship_text(points: int) -> str:
+    if points < 30:
+        return "вы только знакомитесь"
+    elif points < 60:
+        return "между вами есть флирт"
+    else:
+        return "вы довольно близки"
+
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="💬 Написать"), KeyboardButton(text="📊 Профиль")],
@@ -60,300 +74,250 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ==================== ГОЛОС И ФОТО ====================
-def generate_voice(text: str) -> bytes:
+def gen_voice(text: str) -> bytes:
     audio = eleven.text_to_speech.convert(
-        text=text[:450],
+        text=text[:420],
         voice_id="EXAVITQu4vr4xnSDxMaL",
         model_id="eleven_multilingual_v2"
     )
     return b"".join(audio)
 
-def generate_image(prompt: str) -> str:
+def gen_image(prompt: str) -> str:
     r = requests.post(
         "https://api.x.ai/v1/images/generations",
-        headers={
-            "Authorization": f"Bearer {GROK_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "grok-imagine-image-quality",
-            "prompt": prompt,
-            "n": 1
-        },
-        timeout=100
+        headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
+        json={"model": "grok-imagine-image-quality", "prompt": prompt, "n": 1},
+        timeout=90
     )
     r.raise_for_status()
     return r.json()["data"][0]["url"]
 
-# ==================== СТАРТ И АДМИНКА ====================
+# ===== КОМАНДЫ =====
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
+async def start(m: types.Message):
+    await m.answer(
         "Привет. Я Алиса.\n\n"
-        "Можем просто поболтать или пойти дальше.\n"
-        "30 бесплатных сообщений.",
+        "Можем просто поболтать, а можем и ближе познакомиться — как захочешь.\n"
+        "У тебя 30 бесплатных сообщений.",
         reply_markup=main_kb
     )
 
 @dp.message(Command("admin"))
-async def admin(message: types.Message):
-    if not is_admin(message.from_user.id):
+async def admin(m: types.Message):
+    if not is_admin(m.from_user.id):
         return
-    total = len(users)
-    msgs = sum(u["messages"] for u in users.values())
-    await message.answer(
-        f"<b>Админ-панель</b>\n\n"
-        f"Пользователей: {total}\n"
-        f"Сообщений: {msgs}\n"
-        f"В логе: {len(logs)}\n\n"
-        f"/logs — последние сообщения",
-        parse_mode="HTML"
-    )
+    await m.answer(f"Пользователей: {len(users)}\nЛогов: {len(logs)}")
 
 @dp.message(Command("logs"))
-async def show_logs(message: types.Message):
-    if not is_admin(message.from_user.id):
+async def cmd_logs(m: types.Message):
+    if not is_admin(m.from_user.id):
         return
-    if not logs:
-        await message.answer("Лог пуст")
-        return
-    await message.answer("Последние записи:\n\n" + "\n".join(logs[-15:]))
+    await m.answer("\n".join(logs[-12:]) or "Пусто")
 
-# ==================== КНОПКИ ====================
+# ===== КНОПКИ =====
 @dp.message(F.text == "📊 Профиль")
-async def profile(message: types.Message):
-    u = get_user(message.from_user.id)
-    admin = is_admin(message.from_user.id)
-    free = "∞" if admin else max(0, 30 - u["messages"])
-    name = u["name"] or "не указано"
-    await message.answer(
-        f"Имя: {name}\n"
-        f"Отношения: {u['relationship']}/100\n"
+async def profile(m: types.Message):
+    u = get_user(m.from_user.id)
+    free = "∞" if is_admin(m.from_user.id) else max(0, 30 - u["messages"])
+    await m.answer(
+        f"Имя: {u['name'] or '—'}\n"
+        f"Отношения: {u['relationship']}/100 ({get_relationship_text(u['relationship'])})\n"
         f"Бесплатных: {free}\n"
-        f"Платных: {u['paid_messages']}\n"
+        f"Платных: {u['paid']}\n"
         f"Голос: {'вкл' if u['voice_mode'] else 'выкл'}"
     )
 
 @dp.message(F.text == "🛒 Магазин")
-async def shop(message: types.Message):
-    if is_admin(message.from_user.id):
-        await message.answer("Для тебя всё бесплатно")
+async def shop(m: types.Message):
+    if is_admin(m.from_user.id):
+        await m.answer("Для тебя бесплатно")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="20 сообщений — 15⭐", callback_data="buy_20")],
-        [InlineKeyboardButton(text="50 сообщений — 35⭐", callback_data="buy_50")],
-        [InlineKeyboardButton(text="150 сообщений — 80⭐", callback_data="buy_150")]
+        [InlineKeyboardButton(text="50 сообщений — 35⭐", callback_data="buy_50")]
     ])
-    await message.answer("Магазин:", reply_markup=kb)
+    await m.answer("Магазин", reply_markup=kb)
 
 @dp.message(F.text == "🎁 Подарок")
-async def gifts(message: types.Message):
+async def gift_menu(m: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Цветы — 15⭐", callback_data="gift_5")],
-        [InlineKeyboardButton(text="Ужин — 40⭐", callback_data="gift_12")],
-        [InlineKeyboardButton(text="Бельё — 70⭐", callback_data="gift_20")]
+        [InlineKeyboardButton(text="Цветы — 15⭐", callback_data="gift_8")],
+        [InlineKeyboardButton(text="Бельё — 60⭐", callback_data="gift_18")]
     ])
-    await message.answer("Выбери подарок:", reply_markup=kb)
+    await m.answer("Подарок:", reply_markup=kb)
 
 @dp.message(F.text == "🎤 Голос")
-async def toggle_voice(message: types.Message):
-    u = get_user(message.from_user.id)
+async def voice_toggle(m: types.Message):
+    u = get_user(m.from_user.id)
     u["voice_mode"] = not u["voice_mode"]
-    status = "включён" if u["voice_mode"] else "выключен"
-    await message.answer(f"Голосовой режим {status}")
+    await m.answer("Голосовой режим " + ("включён" if u["voice_mode"] else "выключен"))
 
 @dp.message(F.text == "🖼 Фото")
-async def photo_help(message: types.Message):
-    await message.answer("Напиши, какое фото хочешь.\nПример: в белье на кровати")
+async def photo_menu(m: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="В белье", callback_data="style_lingerie")],
+        [InlineKeyboardButton(text="Дома", callback_data="style_home")],
+        [InlineKeyboardButton(text="На пляже", callback_data="style_beach")],
+        [InlineKeyboardButton(text="Своё описание", callback_data="style_custom")]
+    ])
+    await m.answer("Какое фото хочешь?", reply_markup=kb)
 
 @dp.message(F.text.lower().startswith("меня зовут"))
-async def set_name(message: types.Message):
-    name = message.text.split(maxsplit=2)[-1]
-    get_user(message.from_user.id)["name"] = name
-    await message.answer(f"Хорошо, {name}")
+async def set_name(m: types.Message):
+    name = m.text.split(maxsplit=2)[-1].strip()
+    get_user(m.from_user.id)["name"] = name
+    await m.answer(f"Приятно, {name}")
 
-# ==================== ОСНОВНОЙ ОБРАБОТЧИК ====================
+# ===== ОСНОВНОЙ ЧАТ =====
 @dp.message(F.text)
-async def handle_text(message: types.Message):
-    text = message.text.strip()
-    uid = message.from_user.id
+async def chat(m: types.Message):
+    text = m.text.strip()
+    uid = m.from_user.id
     u = get_user(uid)
     admin = is_admin(uid)
 
-    add_log(f"{uid}: {text[:50]}")
-
-    # Фото
-    low = text.lower()
-    if low.startswith("фото") or "бель" in low or low.startswith("в "):
-        u["photo_prompt"] = text
-        if admin:
-            await message.answer("Генерирую...")
-            try:
-                url = generate_image(f"beautiful young woman, {text}, detailed")
-                await message.answer_photo(url)
-            except Exception as e:
-                await message.answer("Не вышло сгенерировать")
-                print("IMG ERROR:", e)
-        else:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оплатить 50⭐", callback_data="pay_photo")]
-            ])
-            await message.answer("Сгенерировать за 50⭐?", reply_markup=kb)
-        return
+    add_log(f"{uid}: {text[:40]}")
 
     # Лимит
-    if not admin and u["messages"] >= 30 and u["paid_messages"] <= 0:
-        await message.answer("Сообщения закончились. Загляни в магазин.")
+    if not admin and u["messages"] >= 30 and u["paid"] <= 0:
+        await m.answer("Сообщения закончились. Зайди в магазин.")
         return
 
     if not admin:
         if u["messages"] < 30:
             u["messages"] += 1
         else:
-            u["paid_messages"] -= 1
+            u["paid"] -= 1
 
     u["relationship"] = min(100, u["relationship"] + 1)
     u["history"].append({"role": "user", "content": text})
-    if len(u["history"]) > 8:
-        u["history"] = u["history"][-8:]
+    if len(u["history"]) > 10:
+        u["history"] = u["history"][-10:]
 
-    await bot.send_chat_action(message.chat.id, "typing")
-    await asyncio.sleep(0.6)
+    await bot.send_chat_action(m.chat.id, "typing")
+    await asyncio.sleep(0.7)
 
-    name_part = f" Пользователя зовут {u['name']}." if u["name"] else ""
-    system = (
-        "Ты Алиса, 23 года. Живая, естественная, с лёгким чувством юмора. "
-        "Поддерживаешь разговор, иногда задаёшь вопросы. "
-        "Если пишут обычно — общаешься интересно. "
-        "Если откровенно — плавно подстраиваешься, без резких отказов. "
-        "Эмодзи используй редко."
-        + name_part
-    )
-
-    messages = [{"role": "system", "content": system}] + u["history"]
+    rel = get_relationship_text(u["relationship"])
+    name = f" Тебя зовут {u['name']}." if u["name"] else ""
+    system = ALISA_PERSONA + f" Сейчас {rel}.{name}"
 
     try:
         r = client.chat.completions.create(
             model="grok-4",
-            messages=messages,
-            temperature=0.84,
-            max_tokens=400
+            messages=[{"role": "system", "content": system}] + u["history"],
+            temperature=0.86,
+            max_tokens=380
         )
         answer = r.choices[0].message.content
         u["last_answer"] = answer
         u["history"].append({"role": "assistant", "content": answer})
 
         if u["voice_mode"]:
-            if admin or u["paid_messages"] >= 10:
-                if not admin:
-                    u["paid_messages"] -= 10
-                audio = generate_voice(answer)
-                await message.answer_voice(BufferedInputFile(audio, "voice.mp3"))
+            if admin:
+                audio = gen_voice(answer)
+                await m.answer_voice(BufferedInputFile(audio, "v.mp3"))
             else:
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Голосовым — 10⭐", callback_data="pay_voice")]
+                    [InlineKeyboardButton(text="Голосом — 10⭐", callback_data="pay_voice")]
                 ])
-                await message.answer(answer, reply_markup=kb)
+                await m.answer(answer, reply_markup=kb)
         else:
-            await message.answer(answer)
-
+            await m.answer(answer)
     except Exception as e:
-        await message.answer("Что-то пошло не так...")
-        print("CHAT ERROR:", e)
+        await m.answer("Секунду, что-то зависло...")
+        print(e)
 
-# ==================== CALLBACK ОПЛАТА ====================
+# ===== ФОТО СТИЛИ =====
+@dp.callback_query(F.data.startswith("style_"))
+async def photo_style(c: types.CallbackQuery):
+    styles = {
+        "style_lingerie": "in lingerie on bed",
+        "style_home": "at home, casual clothes",
+        "style_beach": "on the beach in swimsuit",
+        "style_custom": None
+    }
+    if c.data == "style_custom":
+        await c.message.answer("Напиши своё описание")
+        await c.answer()
+        return
+
+    prompt = styles[c.data]
+    u = get_user(c.from_user.id)
+    u["photo_prompt"] = prompt
+
+    if is_admin(c.from_user.id):
+        await c.message.answer("Генерирую...")
+        try:
+            url = gen_image(f"beautiful young woman, {prompt}, photorealistic")
+            await c.message.answer_photo(url)
+        except Exception as e:
+            await c.message.answer("Не получилось")
+            print(e)
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатить 50⭐", callback_data="pay_photo")]
+        ])
+        await c.message.answer("Сгенерировать за 50⭐?", reply_markup=kb)
+    await c.answer()
+
+# ===== ОПЛАТА =====
 @dp.callback_query(F.data == "pay_photo")
-async def invoice_photo(callback: types.CallbackQuery):
-    await bot.send_invoice(
-        callback.from_user.id,
-        "Фото",
-        "Генерация изображения",
-        "photo",
-        "XTR",
-        [LabeledPrice(label="Фото", amount=50)]
-    )
-    await callback.answer()
+async def pay_photo(c: types.CallbackQuery):
+    await bot.send_invoice(c.from_user.id, "Фото", "Генерация", "photo", "XTR", [LabeledPrice("Фото", 50)])
+    await c.answer()
 
 @dp.callback_query(F.data == "pay_voice")
-async def invoice_voice(callback: types.CallbackQuery):
-    await bot.send_invoice(
-        callback.from_user.id,
-        "Голосовой ответ",
-        "Алиса ответит голосом",
-        "voice",
-        "XTR",
-        [LabeledPrice(label="Голос", amount=10)]
-    )
-    await callback.answer()
+async def pay_voice(c: types.CallbackQuery):
+    await bot.send_invoice(c.from_user.id, "Голос", "Ответ голосом", "voice", "XTR", [LabeledPrice("Голос", 10)])
+    await c.answer()
 
 @dp.callback_query(F.data.startswith("buy_"))
-async def invoice_messages(callback: types.CallbackQuery):
-    mapping = {"buy_20": (20, 15), "buy_50": (50, 35), "buy_150": (150, 80)}
-    amount, price = mapping.get(callback.data, (20, 15))
-    await bot.send_invoice(
-        callback.from_user.id,
-        f"{amount} сообщений",
-        "Пакет сообщений",
-        f"msg_{amount}",
-        "XTR",
-        [LabeledPrice(label="Сообщения", amount=price)]
-    )
-    await callback.answer()
+async def buy(c: types.CallbackQuery):
+    amount = 20 if "20" in c.data else 50
+    price = 15 if amount == 20 else 35
+    await bot.send_invoice(c.from_user.id, f"{amount} сообщений", "Пакет", f"msg_{amount}", "XTR", [LabeledPrice("x", price)])
+    await c.answer()
 
 @dp.callback_query(F.data.startswith("gift_"))
-async def invoice_gift(callback: types.CallbackQuery):
-    mapping = {"gift_5": (5, 15, "Цветы"), "gift_12": (12, 40, "Ужин"), "gift_20": (20, 70, "Бельё")}
-    rel, price, name = mapping.get(callback.data, (5, 15, "Подарок"))
-    await bot.send_invoice(
-        callback.from_user.id,
-        name,
-        "Подарок для Алисы",
-        f"gift_{rel}",
-        "XTR",
-        [LabeledPrice(label=name, amount=price)]
-    )
-    await callback.answer()
+async def gift(c: types.CallbackQuery):
+    rel = 8 if "8" in c.data else 18
+    price = 15 if rel == 8 else 60
+    await bot.send_invoice(c.from_user.id, "Подарок", "Для Алисы", f"gift_{rel}", "XTR", [LabeledPrice("Подарок", price)])
+    await c.answer()
 
 @dp.pre_checkout_query()
-async def pre_checkout(query: PreCheckoutQuery):
-    await query.answer(ok=True)
+async def checkout(q: PreCheckoutQuery):
+    await q.answer(ok=True)
 
 @dp.message(F.successful_payment)
-async def payment_success(message: types.Message):
-    payload = message.successful_payment.invoice_payload
-    u = get_user(message.from_user.id)
+async def paid(m: types.Message):
+    p = m.successful_payment.invoice_payload
+    u = get_user(m.from_user.id)
 
-    if payload == "photo":
-        await message.answer("Генерирую фото...")
+    if p == "photo":
+        await m.answer("Генерирую...")
         try:
-            url = generate_image(u.get("photo_prompt") or "beautiful woman")
-            await message.answer_photo(url)
+            url = gen_image(f"beautiful woman, {u.get('photo_prompt', 'portrait')}")
+            await m.answer_photo(url)
         except Exception as e:
-            await message.answer("Ошибка генерации")
+            await m.answer("Ошибка фото")
             print(e)
-
-    elif payload == "voice":
+    elif p == "voice":
         try:
-            audio = generate_voice(u.get("last_answer") or "Привет")
-            await message.answer_voice(BufferedInputFile(audio, "v.mp3"))
+            audio = gen_voice(u.get("last_answer", "Привет"))
+            await m.answer_voice(BufferedInputFile(audio, "v.mp3"))
         except Exception as e:
-            await message.answer("Ошибка голоса")
+            await m.answer("Ошибка голоса")
             print(e)
+    elif p.startswith("msg_"):
+        u["paid"] += int(p.split("_")[1])
+        await m.answer("Сообщения добавлены")
+    elif p.startswith("gift_"):
+        u["relationship"] = min(100, u["relationship"] + int(p.split("_")[1]))
+        await m.answer("Спасибо... приятно")
 
-    elif payload.startswith("msg_"):
-        amount = int(payload.split("_")[1])
-        u["paid_messages"] += amount
-        await message.answer(f"Добавлено {amount} сообщений")
-
-    elif payload.startswith("gift_"):
-        rel = int(payload.split("_")[1])
-        u["relationship"] = min(100, u["relationship"] + rel)
-        await message.answer("Спасибо за подарок...")
-
-# ==================== ЗАПУСК ====================
 async def main():
-    print("Бот запущен")
+    print("Started")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
