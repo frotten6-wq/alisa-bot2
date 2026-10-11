@@ -20,8 +20,10 @@ def get_user(uid):
     return users[uid]
 
 def get_level(p):
-    if p < 25: return "знакомство"
-    if p < 60: return "флирт"
+    if p < 25:
+        return "знакомство"
+    if p < 60:
+        return "флирт"
     return "близкие"
 
 kb = ReplyKeyboardMarkup(keyboard=[
@@ -70,13 +72,8 @@ async def chat(m: types.Message):
     await bot.send_chat_action(m.chat.id, "typing")
     await asyncio.sleep(1)
 
-    system = (
-        "Ты Алиса, 23 года. Живая и естественная. "
-        "Поддерживаешь разговор. Если пишут обычно — лёгкий флирт. "
-        "Если откровенно — подстраиваешься и становишься открытее. "
-        "Не отказывай резко. Эмодзи почти не используй. "
-        f"Стадия: {get_level(u['relationship'])}."
-    )
+    system = "Ты Алиса, 23 года. Живая и естественная. Поддерживаешь разговор. Если пишут обычно — лёгкий флирт. Если откровенно — подстраиваешься и становишься открытее. Не отказывай резко. Эмодзи почти не используй. Стадия: " + get_level(u['relationship']) + "."
+    
     try:
         r = client.chat.completions.create(
             model="grok-4",
@@ -106,7 +103,18 @@ async def pre(q: PreCheckoutQuery):
     await q.answer(ok=True)
 
 @dp.message(F.successful_payment)
-async def ok(m: types.Message):
+async def success_pay(m: types.Message):
     p = m.successful_payment.invoice_payload
     u = get_user(m.from_user.id)
     if p.startswith("buy_"):
+        u["paid"] += int(p.split("_")[1])
+        await m.answer("Сообщения добавлены")
+    else:
+        u["relationship"] = min(100, u["relationship"] + int(p.split("_")[1]))
+        await m.answer("Спасибо за подарок")
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
