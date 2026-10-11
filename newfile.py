@@ -22,7 +22,8 @@ def get_user(uid):
             "paid": 0,
             "relationship": 0,
             "name": None,
-            "history": []
+            "history": [],
+            "voice_mode": False
         }
     return users[uid]
 
@@ -33,7 +34,7 @@ def get_level(p):
 
 kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Профиль"), KeyboardButton(text="🛒 Магазин")],
-    [KeyboardButton(text="🎁 Подарок"), KeyboardButton(text="🖼 Фото от меня")]
+    [KeyboardButton(text="🎁 Подарок"), KeyboardButton(text="🎤 Голосовой режим")]
 ], resize_keyboard=True)
 
 async def generate_voice(text: str, filename="voice.mp3"):
@@ -56,7 +57,8 @@ async def profile(m: types.Message):
     u = get_user(m.from_user.id)
     free = max(0, 30 - u["messages"])
     name = u["name"] or "не знаю"
-    await m.answer(f"Имя: {name}\nУровень: {get_level(u['relationship'])}\nБесплатных: {free}\nПлатных: {u['paid']}")
+    mode = "вкл" if u["voice_mode"] else "выкл"
+    await m.answer(f"Имя: {name}\nУровень: {get_level(u['relationship'])}\nБесплатных: {free}\nПлатных: {u['paid']}\nГолосовой режим: {mode}")
 
 @dp.message(F.text == "🛒 Магазин")
 async def shop(m: types.Message):
@@ -74,25 +76,12 @@ async def gift_menu(m: types.Message):
     ])
     await m.answer("Подарок:", reply_markup=ikb)
 
-@dp.message(F.text == "🖼 Фото от меня")
-async def ask_photo(m: types.Message):
-    await m.answer("Напиши, какое фото хочешь. Стоит 50⭐\nПример: «фото в белье на кровати»")
-
-@dp.message(F.text.lower().startswith("фото "))
-async def generate_photo(m: types.Message):
+@dp.message(F.text == "🎤 Голосовой режим")
+async def toggle_voice(m: types.Message):
     u = get_user(m.from_user.id)
-    if u["paid"] < 50:
-        await m.answer("Генерация фото — 50⭐")
-        return
-    u["paid"] -= 50
-    prompt = m.text[5:].strip()
-    await m.answer("Генерирую...")
-    try:
-        # Заглушка под генерацию (xAI image пока через отдельный endpoint)
-        # Позже можно заменить на реальный вызов
-        await m.answer(f"Фото по запросу: {prompt}\n(генерация изображений скоро будет подключена полностью)")
-    except:
-        await m.answer("Не получилось сгенерировать")
+    u["voice_mode"] = not u["voice_mode"]
+    status = "включён" if u["voice_mode"] else "выключен"
+    await m.answer(f"Голосовой режим {status}.\nКаждый голосовой ответ — 15⭐")
 
 @dp.message(F.text)
 async def chat(m: types.Message):
@@ -100,6 +89,7 @@ async def chat(m: types.Message):
     if u["messages"] >= 30 and u["paid"] <= 0:
         await m.answer("Бесплатные закончились")
         return
+
     if u["messages"] < 30:
         u["messages"] += 1
     else:
@@ -111,12 +101,12 @@ async def chat(m: types.Message):
         u["history"] = u["history"][-8:]
 
     await bot.send_chat_action(m.chat.id, "typing")
-    await asyncio.sleep(0.8)
+    await asyncio.sleep(0.7)
 
     name_part = f" Пользователя зовут {u['name']}." if u["name"] else ""
     system = (
-        "Ты Алиса, 23 года. Живая, с характером и лёгким юмором. "
-        "Поддерживаешь разговор, иногда сама задаёшь вопросы или проявляешь инициативу. "
+        "Ты Алиса, 23 года. Живая, естественная, с лёгким юмором. "
+        "Поддерживаешь разговор, иногда сама задаёшь вопросы. "
         "Если пишут обычно — интересно общаешься. Если откровенно — подстраиваешься. "
         "Эмодзи почти не используй."
         + name_part + f" Стадия: {get_level(u['relationship'])}."
@@ -124,21 +114,22 @@ async def chat(m: types.Message):
 
     messages = [{"role": "system", "content": system}] + u["history"]
     try:
-        r = client.chat.completions.create(model="grok-4", messages=messages, temperature=0.87)
+        r = client.chat.completions.create(model="grok-4", messages=messages, temperature=0.85)
         answer = r.choices[0].message.content
         u["history"].append({"role": "assistant", "content": answer})
 
-        # Иногда отвечает голосовым
-        if len(answer) < 180 and u["paid"] >= 0:
-            try:
-                filename = f"voice_{m.from_user.id}.mp3"
-                await generate_voice(answer, filename)
-                await m.answer_voice(FSInputFile(filename))
-                os.remove(filename)
+        if u["voice_mode"]:
+            if u["paid"] < 15:
+                await m.answer("Для голосового ответа нужно 15⭐")
+                await m.answer(answer)
                 return
-            except:
-                pass
-        await m.answer(answer)
+            u["paid"] -= 15
+            filename = f"voice_{m.from_user.id}.mp3"
+            await generate_voice(answer, filename)
+            await m.answer_voice(FSInputFile(filename))
+            os.remove(filename)
+        else:
+            await m.answer(answer)
     except:
         await m.answer("Секунду...")
 
@@ -149,16 +140,7 @@ async def photo_react(m: types.Message):
         await m.answer("Реакция на фото — 25⭐")
         return
     u["paid"] -= 25
-    await m.answer("Смотрю... интересно. Расскажи подробнее?")
-
-@dp.message(F.voice)
-async def voice_in(m: types.Message):
-    u = get_user(m.from_user.id)
-    if u["paid"] < 15:
-        await m.answer("Прослушивание голосового — 15⭐")
-        return
-    u["paid"] -= 15
-    await m.answer("Слышу тебя.")
+    await m.answer("Смотрю... расскажи подробнее?")
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def pay(c: types.CallbackQuery):
