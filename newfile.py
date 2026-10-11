@@ -35,11 +35,11 @@ def env(name: str, default: str | None = None, required: bool = False) -> str | 
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", required=True)
 GROK_API_KEY = env("GROK_API_KEY", required=True)
-ADMIN_ID = int(env("ADMIN_ID", "0"))
+ADMIN_ID = "5044633928"
 DB_PATH = env("DB_PATH", "bot.db")
 CHAT_MODEL = env("CHAT_MODEL", "grok-4")
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
-SUPPORT_CONTACT = env("SUPPORT_CONTACT", "@your_username")
+SUPPORT_CONTACT = "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN"
 # Постоянная внешность Алисы — добавляется к каждому промпту для фото
 APPEARANCE = env("APPEARANCE", "adult woman, 23 years old, long dark hair, brown eyes, natural look")
 
