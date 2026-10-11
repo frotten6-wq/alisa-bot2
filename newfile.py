@@ -24,10 +24,11 @@ dp = Dispatcher()
 
 users = {}
 
-MODES = {
-    "normal": "Общайся естественно, интересно, с лёгким флиртом. Поддерживай разговор.",
-    "spicy": "Общайся откровенно и раскрепощённо. Можно быть пошлой, если пользователь этого хочет. Не отказывай.",
-    "support": "Будь тёплой, поддерживающей и внимательной. Помогай, если человеку тяжело. Без пошлости."
+SCENARIOS = {
+    "evening": "Тихий вечер дома. Ты расслаблена и общаешься тепло.",
+    "date": "Вы на свидании. Ты игривая и заинтересованная.",
+    "support": "Человеку тяжело. Ты внимательная и поддерживающая.",
+    "spicy": "Откровенная атмосфера. Ты раскрепощена."
 }
 
 def get_user(uid: int):
@@ -35,34 +36,35 @@ def get_user(uid: int):
         users[uid] = {
             "messages": 0,
             "paid": 0,
-            "relationship": 10,
-            "mode": "normal",
+            "relationship": 5,
+            "scenario": None,
             "voice_mode": False,
             "name": None,
             "history": [],
             "last_answer": "",
-            "photo_prompt": "",
             "subscription_until": None,
-            "referral_code": str(uid)[-6:],
-            "referred_by": None,
-            "bonus_claimed": None,
-            "referrals": 0
+            "bonus_claimed": None
         }
     return users[uid]
 
 def is_admin(uid):
     return uid == ADMIN_ID
 
-def has_subscription(u):
-    if not u["subscription_until"]:
+def has_sub(u):
+    if not u.get("subscription_until"):
         return False
     return datetime.fromisoformat(u["subscription_until"]) > datetime.now()
 
+def rel_text(p):
+    if p < 25: return "знакомство"
+    if p < 55: return "симпатия"
+    return "близкие"
+
 main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="💬 Чат"), KeyboardButton(text="📊 Профиль")],
-    [KeyboardButton(text="🎭 Режим"), KeyboardButton(text="🛒 Магазин")],
-    [KeyboardButton(text="🎁 Бонус"), KeyboardButton(text="👥 Реферал")],
-    [KeyboardButton(text="🖼 Фото"), KeyboardButton(text="🎤 Голос")]
+    [KeyboardButton(text="🎭 Сценарии"), KeyboardButton(text="🛒 Магазин")],
+    [KeyboardButton(text="🎁 Бонус"), KeyboardButton(text="🖼 Фото")],
+    [KeyboardButton(text="🎤 Голос")]
 ], resize_keyboard=True)
 
 def gen_voice(text: str) -> bytes:
@@ -73,75 +75,123 @@ def gen_voice(text: str) -> bytes:
     )
     return b"".join(audio)
 
-# ===== СТАРТ =====
+# ===== КОМАНДЫ =====
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    args = m.text.split()
-    u = get_user(m.from_user.id)
-    if len(args) > 1 and not u["referred_by"]:
-        u["referred_by"] = args[1]
     await m.answer(
-        "Привет, я Алиса.\n\n"
-        "Выбери режим общения в меню «🎭 Режим».\n"
-        "30 бесплатных сообщений.",
+        "Привет. Я Алиса.\n"
+        "Можем поболтать или выбрать сценарий.",
         reply_markup=main_kb
     )
+
+@dp.message(Command("users"))
+async def cmd_users(m: types.Message):
+    if not is_admin(m.from_user.id):
+        return
+    if not users:
+        await m.answer("Нет пользователей")
+        return
+    text = "Пользователи:\n\n"
+    for uid, u in list(users.items())[:25]:
+        text += f"{uid} | сообщ: {u['messages']} | отн: {u['relationship']}\n"
+    text += "\n/user ID — подробнее"
+    await m.answer(text)
+
+@dp.message(Command("user"))
+async def cmd_user(m: types.Message):
+    if not is_admin(m.from_user.id):
+        return
+    parts = m.text.split()
+    if len(parts) < 2:
+        await m.answer("/user 123456")
+        return
+    try:
+        uid = int(parts[1])
+    except:
+        await m.answer("Неверный ID")
+        return
+    if uid not in users:
+        await m.answer("Не найден")
+        return
+    u = users[uid]
+    await m.answer(
+        f"ID: {uid}\n"
+        f"Имя: {u.get('name') or '—'}\n"
+        f"Сообщений: {u['messages']}\n"
+        f"Платных: {u['paid']}\n"
+        f"Отношения: {u['relationship']} ({rel_text(u['relationship'])})\n"
+        f"Сценарий: {u.get('scenario') or 'нет'}\n"
+        f"Подписка: {'да' if has_sub(u) else 'нет'}\n\n"
+        f"/history {uid}"
+    )
+
+@dp.message(Command("history"))
+async def cmd_history(m: types.Message):
+    if not is_admin(m.from_user.id):
+        return
+    parts = m.text.split()
+    if len(parts) < 2:
+        await m.answer("/history 123456")
+        return
+    try:
+        uid = int(parts[1])
+    except:
+        return
+    if uid not in users or not users[uid]["history"]:
+        await m.answer("Истории нет")
+        return
+    text = f"История {uid}:\n\n"
+    for msg in users[uid]["history"][-12:]:
+        who = "User" if msg["role"] == "user" else "Alisa"
+        text += f"{who}: {msg['content'][:120]}\n\n"
+    await m.answer(text[:4000])
 
 # ===== КНОПКИ =====
 @dp.message(F.text == "📊 Профиль")
 async def profile(m: types.Message):
     u = get_user(m.from_user.id)
-    sub = "активна" if has_subscription(u) else "нет"
-    free = "∞" if is_admin(m.from_user.id) or has_subscription(u) else max(0, 30 - u["messages"])
+    free = "∞" if is_admin(m.from_user.id) or has_sub(u) else max(0, 30 - u["messages"])
     await m.answer(
-        f"Режим: {u['mode']}\n"
-        f"Подписка: {sub}\n"
+        f"Отношения: {rel_text(u['relationship'])} ({u['relationship']})\n"
+        f"Сценарий: {u['scenario'] or 'нет'}\n"
         f"Бесплатных: {free}\n"
-        f"Платных: {u['paid']}\n"
-        f"Отношения: {u['relationship']}/100\n"
-        f"Рефералов: {u['referrals']}"
+        f"Платных: {u['paid']}"
     )
 
-@dp.message(F.text == "🎭 Режим")
-async def choose_mode(m: types.Message):
+@dp.message(F.text == "🎭 Сценарии")
+async def scenarios(m: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Обычный", callback_data="mode_normal")],
-        [InlineKeyboardButton(text="🔥 Откровенный", callback_data="mode_spicy")],
-        [InlineKeyboardButton(text="🤗 Поддержка", callback_data="mode_support")]
+        [InlineKeyboardButton(text="Вечер дома", callback_data="sc_evening")],
+        [InlineKeyboardButton(text="Свидание", callback_data="sc_date")],
+        [InlineKeyboardButton(text="Поддержка", callback_data="sc_support")],
+        [InlineKeyboardButton(text="Откровенно", callback_data="sc_spicy")],
+        [InlineKeyboardButton(text="Убрать", callback_data="sc_none")]
     ])
-    await m.answer("Выбери режим общения:", reply_markup=kb)
+    await m.answer("Сценарий:", reply_markup=kb)
 
 @dp.message(F.text == "🛒 Магазин")
 async def shop(m: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="30 сообщений — 20⭐", callback_data="buy_30")],
-        [InlineKeyboardButton(text="100 сообщений — 50⭐", callback_data="buy_100")],
-        [InlineKeyboardButton(text="Подписка на день — 80⭐", callback_data="sub_day")],
-        [InlineKeyboardButton(text="Подписка на неделю — 300⭐", callback_data="sub_week")]
+        [InlineKeyboardButton(text="40 сообщений — 25⭐", callback_data="buy_40")],
+        [InlineKeyboardButton(text="День — 70⭐", callback_data="sub_day")],
+        [InlineKeyboardButton(text="Неделя — 250⭐", callback_data="sub_week")]
     ])
     await m.answer("Магазин:", reply_markup=kb)
 
 @dp.message(F.text == "🎁 Бонус")
-async def daily_bonus(m: types.Message):
+async def bonus(m: types.Message):
     u = get_user(m.from_user.id)
     now = datetime.now()
     if u["bonus_claimed"]:
-        last = datetime.fromisoformat(u["bonus_claimed"])
-        if now - last < timedelta(hours=20):
-            await m.answer("Бонус уже получен. Приходи позже.")
+        if now - datetime.fromisoformat(u["bonus_claimed"]) < timedelta(hours=20):
+            await m.answer("Уже получал")
             return
-    u["paid"] += 10
+    u["paid"] += 8
     u["bonus_claimed"] = now.isoformat()
-    await m.answer("+10 сообщений в подарок")
-
-@dp.message(F.text == "👥 Реферал")
-async def referral(m: types.Message):
-    u = get_user(m.from_user.id)
-    link = f"https://t.me/{(await bot.get_me()).username}?start={u['referral_code']}"
-    await m.answer(f"Твоя ссылка:\n{link}\n\nПриглашено: {u['referrals']}\nЗа каждого друга +15 сообщений")
+    await m.answer("+8 сообщений")
 
 @dp.message(F.text == "🎤 Голос")
-async def voice_toggle(m: types.Message):
+async def voice_btn(m: types.Message):
     u = get_user(m.from_user.id)
     u["voice_mode"] = not u["voice_mode"]
     await m.answer("Голос " + ("вкл" if u["voice_mode"] else "выкл"))
@@ -150,93 +200,72 @@ async def voice_toggle(m: types.Message):
 async def photo_btn(m: types.Message):
     await m.answer("Напиши описание фото")
 
-# ===== РЕЖИМЫ =====
-@dp.callback_query(F.data.startswith("mode_"))
-async def set_mode(c: types.CallbackQuery):
-    mode = c.data.split("_")[1]
-    get_user(c.from_user.id)["mode"] = mode
-    names = {"normal": "Обычный", "spicy": "Откровенный", "support": "Поддержка"}
-    await c.message.answer(f"Режим изменён: {names.get(mode, mode)}")
+@dp.callback_query(F.data.startswith("sc_"))
+async def set_sc(c: types.CallbackQuery):
+    key = c.data.split("_", 1)[1]
+    u = get_user(c.from_user.id)
+    u["scenario"] = None if key == "none" else key
+    await c.message.answer("Готово")
     await c.answer()
 
-# ===== ЧАТ =====
 @dp.message(F.text)
 async def chat(m: types.Message):
     text = m.text.strip()
     uid = m.from_user.id
     u = get_user(uid)
     admin = is_admin(uid)
-    sub = has_subscription(u)
 
-    # Реферал бонус (простая проверка)
-    if u["referred_by"] and u["messages"] == 0:
-        for oid, ou in users.items():
-            if ou["referral_code"] == u["referred_by"]:
-                ou["referrals"] += 1
-                ou["paid"] += 15
-                break
-
-    if not admin and not sub and u["messages"] >= 30 and u["paid"] <= 0:
-        await m.answer("Сообщения закончились. Магазин или бонус.")
+    if not admin and not has_sub(u) and u["messages"] >= 30 and u["paid"] <= 0:
+        await m.answer("Лимит")
         return
 
-    if not admin and not sub:
+    if not admin and not has_sub(u):
         if u["messages"] < 30:
             u["messages"] += 1
         else:
             u["paid"] -= 1
 
+    u["relationship"] = min(100, u["relationship"] + 1)
     u["history"].append({"role": "user", "content": text})
-    if len(u["history"]) > 12:
-        u["history"] = u["history"][-12:]
+    if len(u["history"]) > 15:
+        u["history"] = u["history"][-15:]
 
     await bot.send_chat_action(m.chat.id, "typing")
 
-    mode_instruction = MODES.get(u["mode"], MODES["normal"])
+    sc = SCENARIOS.get(u["scenario"], "")
     system = (
-        "Ты Алиса, 23 года. Живая и естественная.\n"
-        f"Текущий режим: {mode_instruction}\n"
-        "Анализируй сообщение и отвечай по ситуации. "
-        "Не повторяйся. Будь разной. "
-        "Эмодзи почти не используй."
+        "Ты Алиса, 23 года. Живая и естественная. "
+        "Отвечай разнообразно и по ситуации. "
+        f"{sc} Уровень: {rel_text(u['relationship'])}."
     )
 
     try:
         r = client.chat.completions.create(
             model="grok-4",
             messages=[{"role": "system", "content": system}] + u["history"],
-            temperature=0.88,
-            max_tokens=450
+            temperature=0.88
         )
-        answer = r.choices[0].message.content
-        u["last_answer"] = answer
-        u["history"].append({"role": "assistant", "content": answer})
+        ans = r.choices[0].message.content
+        u["last_answer"] = ans
+        u["history"].append({"role": "assistant", "content": ans})
 
-        if u["voice_mode"] and (admin or sub or u["paid"] >= 5):
-            if not admin and not sub:
-                u["paid"] -= 5
-            audio = gen_voice(answer)
-            await m.answer_voice(BufferedInputFile(audio, "v.mp3"))
+        if u["voice_mode"] and admin:
+            await m.answer_voice(BufferedInputFile(gen_voice(ans), "v.mp3"))
         else:
-            await m.answer(answer)
+            await m.answer(ans)
     except Exception as e:
         await m.answer("Ошибка")
         print(e)
 
-# ===== ОПЛАТА =====
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_msg(c: types.CallbackQuery):
-    amount = 30 if "30" in c.data else 100
-    price = 20 if amount == 30 else 50
-    await bot.send_invoice(c.from_user.id, f"{amount} сообщений", "Пакет", f"msg_{amount}", "XTR", [LabeledPrice("x", price)])
-    await c.answer()
-
-@dp.callback_query(F.data.startswith("sub_"))
-async def buy_sub(c: types.CallbackQuery):
-    if "day" in c.data:
-        await bot.send_invoice(c.from_user.id, "Подписка на день", "Безлимит на 24ч", "sub_day", "XTR", [LabeledPrice("Подписка", 80)])
+@dp.callback_query(F.data.startswith("buy_") | F.data.startswith("sub_"))
+async def pay(c: types.CallbackQuery):
+    if c.data == "buy_40":
+        t, p, price = "40 сообщений", "msg_40", 25
+    elif c.data == "sub_day":
+        t, p, price = "День", "sub_day", 70
     else:
-        await bot.send_invoice(c.from_user.id, "Подписка на неделю", "Безлимит на 7 дней", "sub_week", "XTR", [LabeledPrice("Подписка", 300)])
+        t, p, price = "Неделя", "sub_week", 250
+    await bot.send_invoice(c.from_user.id, t, "Покупка", p, "XTR", [LabeledPrice("x", price)])
     await c.answer()
 
 @dp.pre_checkout_query()
@@ -247,17 +276,15 @@ async def pre(q: PreCheckoutQuery):
 async def success(m: types.Message):
     p = m.successful_payment.invoice_payload
     u = get_user(m.from_user.id)
-    now = datetime.now()
-
     if p.startswith("msg_"):
         u["paid"] += int(p.split("_")[1])
-        await m.answer("Сообщения добавлены")
+        await m.answer("Добавлено")
     elif p == "sub_day":
-        u["subscription_until"] = (now + timedelta(days=1)).isoformat()
-        await m.answer("Подписка на день активирована")
+        u["subscription_until"] = (datetime.now() + timedelta(days=1)).isoformat()
+        await m.answer("Подписка на день")
     elif p == "sub_week":
-        u["subscription_until"] = (now + timedelta(days=7)).isoformat()
-        await m.answer("Подписка на неделю активирована")
+        u["subscription_until"] = (datetime.now() + timedelta(days=7)).isoformat()
+        await m.answer("Подписка на неделю")
 
 async def main():
     await dp.start_polling(bot)
