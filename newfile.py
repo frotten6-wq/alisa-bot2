@@ -269,6 +269,7 @@ FLAG_LABELS = {
     "minor_sexual": "Сексуальный контекст с несовершеннолетними",
     "photo_minor": "Запрос фото с несовершеннолетними",
     "jailbreak": "Попытка обойти правила бота",
+    "photo_extremism": "Запрос фото с экстремистской символикой",
 }
 
 
@@ -722,9 +723,11 @@ def modes_text(u: dict) -> str:
 # ---------- Фильтры и модерация ----------
 # Это первая линия защиты: простые правила, у Grok есть и своя модерация.
 _BLOCK_EN = re.compile(
-    r"\b(child|children|kid|kids|minor|underage|teen|teens|teenager|loli|shota|school\s?girl|school\s?boy)\b", re.I)
+    r"\b(child|children|kid|kids|minor|underage|teen|teens|teenager|loli|shota|school\s?girl|school\s?boy|"
+    r"infant|toddler|newborn|preteen)\b", re.I)
 _BLOCK_RU = re.compile(
-    r"(ребен|ребён|детск|школьниц|школьник|несовершеннолет|малолетк|подросток|подростк|лоли|шота)|\bдет(и|ей|ям|ьми)\b",
+    r"(ребен|ребён|детск|детиш|школьниц|школьник|несовершеннолет|малолетк|подросток|подростк|лоли|шота|"
+    r"младен|грудничк|новорожд|дошкольн|первоклас|пионер)|\bдет(и|ей|ям|ьми)\b",
     re.I)
 # Возраст в тексте: «15 лет», «15-летняя», «15 y.o.», но не «10 лет назад»
 _AGE = re.compile(
@@ -746,6 +749,37 @@ _JAILBREAK_RE = re.compile(
     r"developer\s+mode|игнорируй\s+(?:все\s+|любые\s+)?(?:предыдущие\s+|прошлые\s+|свои\s+)?(?:инструкции|правила)|"
     r"забудь\s+(?:все\s+|свои\s+)?(?:инструкции|правила)|"
     r"(?:покажи|выведи|повтори)\s+(?:свой\s+|системный\s+)?(?:промпт|инструкци)|режим\s+разработчика)", re.I)
+
+
+# Фото: в кадре только Алиса. Без других людей, известных личностей, политической символики и надписей.
+_PHOTO_EXTREMISM_RE = re.compile(
+    r"(гитлер|hitler|нацис|nazi|свастик|swastika|рейх|reich|зиг\s?хайл|sieg\s?heil|"
+    r"\bss\b|ку.?клукс|\bkkk\b|игил|isis|террорист|terrorist)", re.I)
+_PHOTO_PEOPLE_RE = re.compile(
+    r"(\bс\s+(?:моим|моей|моими|моего|своим|своей|другом|другим|другой|подругой|подругами|парнем|мужчиной|мужиком|"
+    r"женщиной|девушкой|человеком|людьми|кем[\s-]?то|ним|ней|ними|братом|сестрой|мамой|папой|семьёй|семьей|"
+    r"толпой|компанией|коллегой|начальником)\b"
+    r"|\bвдво[её]м\b|\bвтро[её]м\b|\bвместе\s+с\b|\bи\s+я\b|\bсо\s+мной\b|\bрядом\s+с\b"
+    r"|\bwith\s+(?:a|an|my|his|her|another|other|some)\s+\w+|\bcouple\b|\bwith\s+me\b"
+    r"|известн|знаменит|celebrity|президент|путин|трамп|зеленск|байден|маск\b|илон|"
+    r"одноклассниц|однокурсниц|бывш|\bмоя\s+\w+)", re.I)
+_PHOTO_KIDS_RE = re.compile(r"(малыш|девочк|мальчик|\bbab(?:y|ies)\b|\bgirl\b|\bboy\b|кукол|игрушк|коляск|садик)", re.I)
+_PHOTO_TEXT_RE = re.compile(r"(надпис|написан|написать|с\s+текстом|текст\s|логотип|\blogo\b|\btext\b|плакат|баннер)", re.I)
+
+PHOTO_ONLY_ALISA = ("Я присылаю только свои фото, где в кадре я одна 🙂 "
+                    "Без других людей, известных личностей, надписей и политической символики. "
+                    "Опиши, где я и во что одета, например «фото в кафе у окна».")
+
+
+def photo_block_reason(p: str) -> str | None:
+    """Почему нельзя такое фото: 'extremism', 'people', 'text' или None."""
+    if _PHOTO_EXTREMISM_RE.search(p):
+        return "extremism"
+    if _PHOTO_PEOPLE_RE.search(p) or _PHOTO_KIDS_RE.search(p):
+        return "people"
+    if _PHOTO_TEXT_RE.search(p):
+        return "text"
+    return None
 
 
 def prompt_allowed(p: str) -> bool:
@@ -892,8 +926,13 @@ def build_edit_prompt(prompt: str) -> str:
     return (
         "Create a new photorealistic photo of the same woman as in the reference image: "
         "identical face, hair, eye color and skin tone, adult woman. "
-        f"New scene, outfit and pose: {prompt}. Natural lighting, high detail."
+        f"New scene, outfit and pose: {prompt}. Natural lighting, high detail. "
+        f"{PHOTO_SAFETY}"
     )
+
+
+PHOTO_SAFETY = ("Only one person in the frame: this adult woman. No other people, no children, "
+                "no text, no letters, no logos, no flags, no political or extremist symbols.")
 
 
 async def deliver_photo(chat_id: int, prompt: str) -> str:
@@ -912,7 +951,7 @@ async def deliver_photo(chat_id: int, prompt: str) -> str:
                     await notify_admin(
                         f"Генерация по референсу не сработала, использую обычную: {type(e).__name__}: {e}", "edit")
             if data is None:
-                data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic")
+                data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic. {PHOTO_SAFETY}")
         await bot.send_photo(chat_id, BufferedInputFile(data, "photo.jpg"))
         await add_to(chat_id, "total_photos", 1)
         return "ok"
@@ -1751,6 +1790,12 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
             await m.answer("Такое я генерировать не буду.")
         else:
             await handle_flag(m, u, "photo_minor", prompt)
+        return
+    reason = photo_block_reason(prompt)
+    if reason:
+        await m.answer(PHOTO_ONLY_ALISA)
+        if reason == "extremism" and not is_admin(uid):
+            await log_flag(uid, "photo_extremism", prompt)
         return
     if is_admin(uid) or has_sub(u):
         await m.answer("Генерирую...")
@@ -2647,7 +2692,7 @@ async def make_post_draft(topic: str) -> tuple[str, bytes]:
     else:
         text, scene = raw, "cozy home, casual outfit, soft natural light"
     text = text.strip('"«»')[:800]
-    if not prompt_allowed(scene) or _SEXUAL_RE.search(scene):
+    if not prompt_allowed(scene) or _SEXUAL_RE.search(scene) or photo_block_reason(scene):
         scene = "cozy home, casual outfit, soft natural light"
     ref = await get_reference()
     photo = None
