@@ -91,6 +91,12 @@ MORNING_HOURS = (8, 11)     # окно местного времени для «
 FIRST_DISCOUNT_PCT = 30     # скидка на первую покупку, %
 FIRST_DISCOUNT_HOURS = 24   # сколько часов после регистрации действует скидка
 
+# Канал бота. Бот должен быть администратором канала (публикация и изменение сообщений)
+CHANNEL = env("CHANNEL", "@alisa_chat_channel")
+CHANNEL_BONUS = 10          # сообщений за подписку на канал (один раз)
+AUTOPOST_ENABLED = env("AUTOPOST_ENABLED", "0") == "1"   # раз в день присылать админу черновик поста
+AUTOPOST_HOUR = 12          # во сколько (по UTC+DEFAULT_TZ) готовить ежедневный черновик
+
 # Цены и наборы можно свободно менять
 PRODUCTS = {
     "msg_40":    {"title": "40 сообщений",      "price": 25,   "msgs": 40},
@@ -146,7 +152,7 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="💬 Чат"), KeyboardButton(text="📊 Профиль")],
     [KeyboardButton(text="🎭 Сценарии"), KeyboardButton(text="🛒 Магазин")],
     [KeyboardButton(text="🎁 Бонус"), KeyboardButton(text="🖼 Фото")],
-    [KeyboardButton(text="👥 Друзья")],
+    [KeyboardButton(text="👥 Друзья"), KeyboardButton(text="📢 Канал")],
 ], resize_keyboard=True)
 
 WELCOME_TIPS = (
@@ -154,6 +160,8 @@ WELCOME_TIPS = (
     "например «фото в красном платье на балконе»."
     + (f"\n\nПод моими ответами есть кнопка «🔊 Озвучить»: первые {FREE_VOICES} озвучки бесплатно."
        if VOICE_ENABLED else "")
+    + (f"\n\nМои фото и новости: {CHANNEL} (за подписку +{CHANNEL_BONUS} сообщений, кнопка «📢 Канал»)"
+       if CHANNEL else "")
 )
 
 # Приветственное фото Алисы: подпись под ним. Меняй текст как хочешь.
@@ -268,6 +276,7 @@ CREATE TABLE IF NOT EXISTS users (
     tz_offset INTEGER NOT NULL DEFAULT {DEFAULT_TZ},
     last_morning TEXT,
     expiry_notified TEXT,
+    channel_bonus INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
 );
@@ -311,6 +320,14 @@ CREATE TABLE IF NOT EXISTS promo_codes (
     used INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channel_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    photo BLOB,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS promo_uses (
     code TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -335,6 +352,7 @@ NEW_COLS = {
     "tz_offset": f"INTEGER NOT NULL DEFAULT {DEFAULT_TZ}",
     "last_morning": "TEXT",
     "expiry_notified": "TEXT",
+    "channel_bonus": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -343,6 +361,7 @@ USER_FIELDS = {
     "ref_rewarded", "memory_note", "since_summary", "banned", "last_nudge", "notify",
     "tg_username", "tg_name", "warnings", "ban_reason", "streak", "free_voices",
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
+    "channel_bonus",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -1388,6 +1407,55 @@ async def btn_photo(m: types.Message):
     await m.answer("Напиши: Фото и описание, например «фото в красном платье на балконе».")
 
 
+def channel_link() -> str:
+    return f"https://t.me/{CHANNEL.lstrip('@')}"
+
+
+@dp.message(F.text == "📢 Канал")
+@dp.message(Command("channel"))
+async def btn_channel(m: types.Message):
+    if not CHANNEL:
+        await m.answer("Канала пока нет 🙂")
+        return
+    u = await get_user(m.from_user.id)
+    rows = [[InlineKeyboardButton(text="📢 Открыть канал", url=channel_link())]]
+    text = f"Мой канал: {CHANNEL}\nТам мои фото, новости и промокоды только для подписчиков."
+    if not u["channel_bonus"]:
+        rows.append([InlineKeyboardButton(text=f"✅ Я подписался (+{CHANNEL_BONUS})", callback_data="ch:check")])
+        text += f"\n\nПодпишись и нажми «Я подписался»: получишь +{CHANNEL_BONUS} сообщений 🎁"
+    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data == "ch:check")
+async def cb_channel_check(c: types.CallbackQuery):
+    uid = c.from_user.id
+    async with user_lock(uid):
+        u = await get_user(uid)
+        if u["channel_bonus"]:
+            await c.answer("Бонус за подписку уже получен 🙂", show_alert=True)
+            return
+        try:
+            member = await bot.get_chat_member(CHANNEL, uid)
+            subscribed = member.status in ("member", "administrator", "creator")
+        except Exception as e:
+            log.exception("Не удалось проверить подписку на канал")
+            await notify_admin(f"Не могу проверить подписку на {CHANNEL}: {type(e).__name__}: {e}. "
+                               "Проверь, что бот — администратор канала.", "channel")
+            await c.answer("Не получилось проверить подписку, попробуй чуть позже", show_alert=True)
+            return
+        if not subscribed:
+            await c.answer("Не вижу подписки 🙈 Подпишись на канал и нажми ещё раз", show_alert=True)
+            return
+        await add_to(uid, "paid", CHANNEL_BONUS)
+        await set_fields(uid, channel_bonus=1)
+    await c.answer(f"Спасибо за подписку! +{CHANNEL_BONUS} сообщений 🎁", show_alert=True)
+    try:
+        await c.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📢 Открыть канал", url=channel_link())]]))
+    except Exception:
+        pass
+
+
 @dp.message(F.text == "👥 Друзья")
 @dp.message(Command("ref"))
 async def btn_ref(m: types.Message):
@@ -1703,7 +1771,9 @@ ADMIN_HELP = (
     "/refund USER_ID CHARGE_ID · /broadcast текст\n"
     "/genref · /setref · /delref — эталон внешности (нужен для приветственного фото)\n"
     "/promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ — создать промокод (пример: /promoadd WELCOME 20 0 100)\n"
-    "/promolist · /promodel КОД — список и удаление промокодов"
+    "/promolist · /promodel КОД — список и удаление промокодов\n"
+    "/post [тема] — черновик поста в канал с фото (публикуется только по кнопке)\n"
+    "/chanhello — опубликовать и закрепить приветственный пост в канале"
 )
 
 
@@ -2236,6 +2306,185 @@ async def adm_broadcast(m: types.Message, command: CommandObject):
     await m.answer(f"Отправлено: {ok}, не доставлено: {fail}")
 
 
+# ---------- Посты в канал ----------
+
+POST_TASK = (
+    "Напиши пост для своего Telegram-канала от первого лица, как Алиса. "
+    "Тёплый, живой тон, 2-5 предложений, можно пару эмодзи, без хэштегов. "
+    "Пост должен быть уместен для публичного канала: лёгкий флирт можно, откровенного нельзя. "
+    "Ответь строго в двух строках:\n"
+    "ТЕКСТ: <текст поста>\n"
+    "ФОТО: <короткое описание сцены для фото на английском: место, одежда, поза, свет>"
+)
+
+
+async def make_post_draft(topic: str) -> tuple[str, bytes]:
+    task = POST_TASK + (f"\nТема поста: {topic}" if topic else "\nТему выбери сама: что-то из повседневной жизни.")
+    r = await llm.chat.completions.create(
+        model=CHAT_MODEL, temperature=0.95,
+        messages=[{"role": "system", "content": PERSONA + " " + RULES}, {"role": "user", "content": task}])
+    raw = (r.choices[0].message.content or "").strip()
+    mt = re.search(r"ТЕКСТ:\s*(.+?)\s*ФОТО:\s*(.+)", raw, re.S)
+    if mt:
+        text, scene = mt.group(1).strip(), mt.group(2).strip()
+    else:
+        text, scene = raw, "cozy home, casual outfit, soft natural light"
+    text = text.strip('"«»')[:800]
+    if not prompt_allowed(scene) or _SEXUAL_RE.search(scene):
+        scene = "cozy home, casual outfit, soft natural light"
+    ref = await get_reference()
+    photo = None
+    if ref:
+        try:
+            photo = await edit_image(build_edit_prompt(scene + ", tasteful, fully clothed"), ref)
+        except Exception:
+            log.exception("Пост: генерация по референсу не удалась")
+    if photo is None:
+        photo = await gen_image(f"{APPEARANCE}, {scene}, tasteful, fully clothed, photorealistic")
+    return text, photo
+
+
+def post_kb(pid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_b("✅ Опубликовать", f"post:pub:{pid}")],
+        [_b("🔄 Переделать", f"post:redo:{pid}"), _b("❌ Отмена", f"post:del:{pid}")],
+    ])
+
+
+def bot_button() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💬 Написать Алисе", url=f"https://t.me/{BOT_USERNAME}")]])
+
+
+async def send_post_draft(topic: str) -> None:
+    """Готовит черновик и присылает админу на одобрение."""
+    try:
+        text, photo = await make_post_draft(topic)
+    except ImageRefused:
+        await bot.send_message(ADMIN_ID, "Генератор отклонил картинку для поста. Попробуй /post с другой темой.")
+        return
+    except Exception as e:
+        log.exception("Ошибка подготовки поста")
+        await bot.send_message(ADMIN_ID, f"Не получилось подготовить пост: {type(e).__name__}: {e}")
+        return
+    cur = await execute("INSERT INTO channel_posts (topic, text, photo, created_at) VALUES (?,?,?,?)",
+                        (topic, text, photo, now_utc().isoformat()))
+    await bot.send_photo(ADMIN_ID, BufferedInputFile(photo, "post.jpg"),
+                         caption=f"📝 Черновик для {CHANNEL}:\n\n{text}"[:1024], reply_markup=post_kb(cur.lastrowid))
+
+
+@dp.message(Command("post"), ADMIN)
+async def adm_post(m: types.Message, command: CommandObject):
+    if not CHANNEL:
+        await m.answer("Канал не задан (переменная CHANNEL).")
+        return
+    await m.answer("Готовлю черновик поста, это займёт до минуты...")
+    async with ChatActionSender.upload_photo(bot=bot, chat_id=m.chat.id):
+        await send_post_draft((command.args or "").strip()[:200])
+
+
+@dp.callback_query(F.data.startswith("post:"), ADMIN)
+async def cb_post(c: types.CallbackQuery):
+    parts = c.data.split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await c.answer("Ошибка", show_alert=True)
+        return
+    action, pid = parts[1], int(parts[2])
+    async with db.execute("SELECT * FROM channel_posts WHERE id=?", (pid,)) as cur:
+        row = await cur.fetchone()
+    if not row or row["status"] != "draft":
+        await c.answer("Этот черновик уже обработан", show_alert=True)
+        return
+    if action == "del":
+        await execute("UPDATE channel_posts SET status='cancelled', photo=NULL WHERE id=?", (pid,))
+        await c.answer("Отменено")
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    if action == "redo":
+        await execute("UPDATE channel_posts SET status='cancelled', photo=NULL WHERE id=?", (pid,))
+        await c.answer("Переделываю...")
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await send_post_draft(row["topic"])
+        return
+    if action == "pub":
+        try:
+            await bot.send_photo(CHANNEL, BufferedInputFile(bytes(row["photo"]), "alisa.jpg"),
+                                 caption=row["text"][:1000], reply_markup=bot_button())
+        except Exception as e:
+            log.exception("Ошибка публикации в канал")
+            await c.answer(f"Не получилось опубликовать: {e}. Бот — админ канала?", show_alert=True)
+            return
+        await execute("UPDATE channel_posts SET status='published', photo=NULL WHERE id=?", (pid,))
+        await c.answer("Опубликовано ✅")
+        try:
+            await c.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    await c.answer("Неизвестное действие", show_alert=True)
+
+
+CHANNEL_HELLO = (
+    "Привет, я Алиса 👋\n\n"
+    "Мне 23, я люблю долгие разговоры по вечерам и узнавать новых людей. "
+    "Здесь мои фото, новости и подарки для подписчиков.\n\n"
+    "Со мной можно поболтать в личке: я помню, о чём мы говорили, отвечаю на голосовые и присылаю фото 📸\n\n"
+    "🎁 Подарок подписчикам: нажми в боте «📢 Канал» → «Я подписался» и получи +{bonus} сообщений.\n\n"
+    "Я ИИ-собеседница. 18+"
+)
+
+
+@dp.message(Command("chanhello"), ADMIN)
+async def adm_chanhello(m: types.Message):
+    if not CHANNEL:
+        await m.answer("Канал не задан (переменная CHANNEL).")
+        return
+    text = CHANNEL_HELLO.format(bonus=CHANNEL_BONUS)
+    try:
+        ref = await get_reference()
+        if ref:
+            msg = await bot.send_photo(CHANNEL, BufferedInputFile(ref, "alisa.jpg"), caption=text,
+                                       reply_markup=bot_button())
+        else:
+            msg = await bot.send_message(CHANNEL, text, reply_markup=bot_button())
+    except Exception as e:
+        await m.answer(f"Не получилось опубликовать: {e}\nПроверь, что бот — администратор канала.")
+        return
+    try:
+        await bot.pin_chat_message(CHANNEL, msg.message_id, disable_notification=True)
+        await m.answer("Приветственный пост опубликован и закреплён ✅")
+    except Exception:
+        await m.answer("Пост опубликован, но закрепить не вышло: закрепи его вручную "
+                       "или дай боту право «Изменение сообщений».")
+
+
+async def autopost_loop() -> None:
+    """Раз в день готовит черновик поста и присылает админу на одобрение."""
+    while True:
+        try:
+            await asyncio.sleep(1800)
+            local = local_now(DEFAULT_TZ)
+            if local.hour != AUTOPOST_HOUR:
+                continue
+            day = local.strftime("%Y-%m-%d")
+            async with db.execute("SELECT value FROM kv WHERE key='autopost_day'") as cur:
+                row = await cur.fetchone()
+            if row and row[0] == day:
+                continue
+            await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('autopost_day', ?)", (day,))
+            await send_post_draft("")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Ошибка автопостинга")
+
+
 @dp.message(F.text.startswith("/"))
 async def unknown_command(m: types.Message):
     await m.answer("Не знаю такой команды 🙂")
@@ -2266,6 +2515,7 @@ async def main():
         BotCommand(command="name", description="Сменить имя"),
         BotCommand(command="reset", description="Очистить историю"),
         BotCommand(command="ref", description="Пригласить друзей"),
+        BotCommand(command="channel", description="Канал Алисы и бонус за подписку"),
         BotCommand(command="promo", description="Ввести промокод"),
         BotCommand(command="tz", description="Часовой пояс"),
         BotCommand(command="notify", description="Напоминания от Алисы вкл/выкл"),
@@ -2278,6 +2528,8 @@ async def main():
              "включено" if ELEVEN_API_KEY else "выключено (нет ELEVEN_API_KEY)")
 
     spawn(expiry_loop())
+    if AUTOPOST_ENABLED and CHANNEL:
+        spawn(autopost_loop())
     if NUDGES_ENABLED:
         spawn(nudge_loop())
         spawn(morning_loop())
