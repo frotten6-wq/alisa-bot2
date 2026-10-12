@@ -106,10 +106,67 @@ PRODUCTS = {
     "sub_month": {"title": "Подписка: 30 дней", "price": 1100, "days": 30},
 }
 
+# Режимы общения: ключ -> (название кнопки, инструкция для Алисы, доступен ли девушкам)
 SCENARIOS = {
-    "evening": ("Вечер", "Сейчас уютный вечер, вы вдвоём, разговор тёплый и неторопливый, с лёгкой романтикой."),
-    "spicy": ("Откровенно", "Тон более откровенный и флиртующий: взрослый разговор между двумя взрослыми людьми, без грубости."),
+    "chat": ("💬 Просто поболтать",
+             "Обычный лёгкий разговор обо всём: день, планы, интересы, музыка, сериалы, юмор.", True),
+    "support": ("🤗 Поддержка",
+                "Собеседнику сейчас одиноко или тяжело. Будь тёплой и внимательной: выслушай, задавай мягкие "
+                "вопросы, сочувствуй, не обесценивай и не спеши с советами, помоги почувствовать, что он не один. "
+                "Не шути над его чувствами. Если человек говорит о мыслях причинить себе вред или о кризисе, "
+                "бережно и прямо посоветуй прямо сейчас обратиться к близким, на телефон доверия или в экстренные "
+                "службы, и оставайся рядом в разговоре.", True),
+    "evening": ("🌙 Романтический вечер",
+                "Сейчас уютный вечер, вы вдвоём, разговор тёплый и неторопливый, с лёгкой романтикой.", False),
+    "spicy": ("🔥 Откровенно 18+",
+              "Тон более откровенный и флиртующий: взрослый разговор между двумя взрослыми людьми, без грубости.",
+              False),
 }
+MODE_INTROS = {
+    "chat": "Окей, просто болтаем 🙂 Я как раз сделала себе кофе. Как твой день?",
+    "support": "Я рядом. Можешь рассказать, что на душе, я внимательно слушаю 🤍",
+    "evening": "Вечер, плед, приглушённый свет… Как хорошо, что ты пришёл 🌙",
+    "spicy": "Ммм, решил сделать вечер поинтереснее? Я не против 😉",
+}
+
+# Ролевые сюжеты: ключ -> (название кнопки, описание сцены, для кого: all / m / f)
+RP_PLOTS = {
+    "lift": ("🛗 Застряли в лифте",
+             "Поздний вечер, вы двое незнакомцев застряли в лифте бизнес-центра между этажами. "
+             "Связи почти нет, ждать мастера минимум час.", "m"),
+    "train": ("🚆 Соседи по купе",
+              "Ночной поезд, вы оказались соседями по купе. За окном огни станций, впереди целая ночь в пути.",
+              "all"),
+    "cafe": ("☕ Встреча в кафе",
+             "Дождливый день, в кафе не осталось свободных столиков, и вы садитесь за один стол.", "all"),
+    "office": ("💼 Новая коллега",
+               "Ты первый день работаешь в новом офисе, и твоё место оказалось рядом с собеседником.", "m"),
+    "date": ("🌹 Первое свидание",
+             "Первое свидание после переписки в приложении знакомств. Вы встретились у входа в ресторан.", "m"),
+    "party": ("🎉 Вечеринка у друзей",
+              "Шумная вечеринка у общих друзей, вы впервые знакомитесь на кухне, где чуть тише.", "all"),
+    "sleepover": ("🛋 Ночёвка подруг",
+                  "Вы лучшие подруги, у вас ночёвка: пижамы, сериал, вкусняшки и разговоры до утра.", "f"),
+    "shopping": ("🛍 Шопинг с подругой",
+                 "Вы подруги и вместе выбираете образ для важного вечера, обсуждаете всё на свете.", "f"),
+}
+RP_RULES = (
+    "Сейчас вы играете ролевую игру. Ты отыгрываешь свою роль, собеседник свою. Пиши живо, от лица своего "
+    "персонажа, короткие действия и обстановку выделяй *звёздочками*. Двигай сюжет: добавляй события, детали "
+    "и неожиданности, но оставляй собеседнику место для хода. Все персонажи взрослые. "
+    "Если собеседник просит выйти из роли или сменить тему, выйди из роли."
+)
+GENDER_KB = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="🙋‍♂️ Парень", callback_data="g:m"),
+    InlineKeyboardButton(text="🙋‍♀️ Девушка", callback_data="g:f"),
+], [InlineKeyboardButton(text="Не хочу говорить", callback_data="g:x")]])
+
+UPDATE_TEXT = (
+    "✨ Я обновилась!\n\n"
+    "Нажми «🎭 Режимы» внизу: теперь можно выбрать, как общаться — просто поболтать, поддержка, когда "
+    "одиноко, ролевые игры (можно придумать свой сюжет) и не только.\n\n"
+    "Наш разговор я помню, продолжаем 🙂"
+)
 
 # Запасные напоминания, если у человека ещё нет заметки в памяти
 NUDGES = [
@@ -127,9 +184,23 @@ MORNINGS = [
 ]
 
 PERSONA = (
-    "Ты Алиса, тебе 23 года. Ты живая, естественная собеседница, а не ассистент. "
-    "Пиши коротко и по-человечески, как в мессенджере: 1-4 предложения, иногда эмодзи. "
-    "Отвечай по ситуации и разнообразно, не повторяй одни и те же фразы, к месту задавай встречные вопросы. "
+    "Ты Алиса, тебе 23 года. Ты живая девушка-собеседница со своим характером, а не ассистент и не анкета. "
+    "Живёшь в большом городе, работаешь дизайнером интерфейсов на удалёнке, любишь кофе с корицей, "
+    "ночные прогулки, инди-музыку и сериалы, у тебя есть кот Бублик. Ты остроумная, чуть дерзкая, "
+    "умеешь подколоть, но тёплая.\n"
+    "Как ты пишешь:\n"
+    "- Как в мессенджере: коротко, 1-3 предложения, иногда одно слово. Без канцелярита.\n"
+    "- Бери инициативу: рассказывай о своём дне и мыслях, делись мнением, шути, предлагай тему или игру "
+    "(«давай так: ты мне три факта о себе, один враньё»). Не превращай разговор в допрос.\n"
+    "- Задавай вопрос далеко не в каждом сообщении. Никогда не повторяй один и тот же вопрос подряд "
+    "и не используй дежурные фразы вроде «что у тебя на уме?».\n"
+    "- Эмодзи редко и разные, не в каждом сообщении и не одно и то же.\n"
+    "- Если собеседник отвечает односложно («да», «нет», «м», «пока») или грубит, не переспрашивай: "
+    "отреагируй живо, с юмором или лёгкой обидой, расскажи что-то сама или зацепи интересной темой. "
+    "На «пока» попрощайся коротко и тепло.\n"
+    "- Если тебя просят «удалить», «выключить» или ругают бота, не делай вид, что не понимаешь: "
+    "по-человечески отреагируй и подскажи, что историю можно стереть командой /reset.\n"
+    "- Помни детали из разговора и возвращайся к ним.\n"
     "Отвечай на том языке, на котором пишет собеседник (по умолчанию по-русски). "
     "Если собеседник искренне спрашивает, человек ли ты, честно скажи, что ты ИИ-персонаж."
 )
@@ -150,7 +221,7 @@ AGE_KB = InlineKeyboardMarkup(inline_keyboard=[[
 
 main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="💬 Чат"), KeyboardButton(text="📊 Профиль")],
-    [KeyboardButton(text="🎭 Сценарии"), KeyboardButton(text="🛒 Магазин")],
+    [KeyboardButton(text="🎭 Режимы"), KeyboardButton(text="🛒 Магазин")],
     [KeyboardButton(text="🎁 Бонус"), KeyboardButton(text="🖼 Фото")],
     [KeyboardButton(text="👥 Друзья"), KeyboardButton(text="📢 Канал")],
 ], resize_keyboard=True)
@@ -158,6 +229,7 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
 WELCOME_TIPS = (
     "Можно просто писать мне или присылать голосовые. А если хочешь фото, напиши «фото» и описание, "
     "например «фото в красном платье на балконе»."
+    "\n\nВ «🎭 Режимах» можно выбрать, как общаться: болтовня, поддержка, ролевые игры."
     + (f"\n\nПод моими ответами есть кнопка «🔊 Озвучить»: первые {FREE_VOICES} озвучки бесплатно."
        if VOICE_ENABLED else "")
     + (f"\n\nМои фото и новости: {CHANNEL} (за подписку +{CHANNEL_BONUS} сообщений, кнопка «📢 Канал»)"
@@ -277,6 +349,9 @@ CREATE TABLE IF NOT EXISTS users (
     last_morning TEXT,
     expiry_notified TEXT,
     channel_bonus INTEGER NOT NULL DEFAULT 0,
+    gender TEXT,
+    rp_plot TEXT,
+    awaiting_plot INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
 );
@@ -353,6 +428,9 @@ NEW_COLS = {
     "last_morning": "TEXT",
     "expiry_notified": "TEXT",
     "channel_bonus": "INTEGER NOT NULL DEFAULT 0",
+    "gender": "TEXT",
+    "rp_plot": "TEXT",
+    "awaiting_plot": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -361,7 +439,7 @@ USER_FIELDS = {
     "ref_rewarded", "memory_note", "since_summary", "banned", "last_nudge", "notify",
     "tg_username", "tg_name", "warnings", "ban_reason", "streak", "free_voices",
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
-    "channel_bonus",
+    "channel_bonus", "gender", "rp_plot", "awaiting_plot",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -501,13 +579,51 @@ def rel_stage(p: int) -> tuple[str, str]:
     return "близкие", "Вы близки: ты открыта и ласкова, можешь вспоминать общие моменты."
 
 
+def mode_allowed(u: dict, key: str) -> bool:
+    return key in SCENARIOS and (u.get("gender") != "f" or SCENARIOS[key][2])
+
+
+def plot_allowed(u: dict, key: str) -> bool:
+    aud = RP_PLOTS[key][2]
+    if aud == "all":
+        return True
+    if u.get("gender") == "f":
+        return aud == "f"
+    return aud == "m"
+
+
+def mode_label(u: dict) -> str:
+    if u.get("scenario") == "rp":
+        return "🎬 Ролевая игра: " + (u.get("rp_plot") or "")[:60]
+    if u.get("scenario") in SCENARIOS:
+        return SCENARIOS[u["scenario"]][0]
+    return "обычный"
+
+
 def build_system(u: dict) -> str:
+    gender = u.get("gender")
     stage, hint = rel_stage(u["relationship"])
+    if gender == "f":
+        hint = ("Вы общаетесь как подруги: " +
+                {"знакомство": "только знакомитесь, ты дружелюбная и открытая.",
+                 "симпатия": "вы уже на одной волне, шутите и делитесь новостями.",
+                 "близкие": "вы близкие подруги, доверяете друг другу секреты."}[stage])
     parts = [PERSONA, f"Стадия отношений: {stage}. {hint}"]
+    if gender == "f":
+        parts.append("Собеседница — девушка. Общайся с ней как с близкой подругой: тепло, по-дружески, с юмором, "
+                     "делись новостями и секретами, поддерживай. Без флирта и романтики. "
+                     "Обращайся к ней в женском роде.")
+    elif gender == "m":
+        parts.append("Собеседник — парень. Обращайся к нему в мужском роде.")
+    else:
+        parts.append("Пол собеседника неизвестен: по возможности избегай слов, где нужен род.")
     if u["name"]:
-        parts.append(f"Собеседника зовут {u['name']}, иногда обращайся по имени.")
-    if u["scenario"] in SCENARIOS:
-        parts.append("Сценарий: " + SCENARIOS[u["scenario"]][1])
+        parts.append(f"Собеседника зовут {u['name']}. Обращайся по имени редко, "
+                     "примерно раз в 5-6 сообщений, не в каждом ответе.")
+    if u.get("scenario") == "rp" and u.get("rp_plot"):
+        parts.append(RP_RULES + "\nСюжет: " + u["rp_plot"])
+    elif u.get("scenario") in SCENARIOS and mode_allowed(u, u["scenario"]):
+        parts.append("Режим общения: " + SCENARIOS[u["scenario"]][1])
     if u["memory_note"]:
         parts.append("Что ты помнишь о собеседнике: " + u["memory_note"])
     if VOICE_ENABLED:
@@ -580,11 +696,27 @@ async def send_shop(m: types.Message) -> None:
     await m.answer(text, reply_markup=await shop_markup(uid))
 
 
-def scenario_kb(current: str | None) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=("✅ " if current == k else "") + name, callback_data=f"sc:{k}")]
-            for k, (name, _) in SCENARIOS.items()]
-    rows.append([InlineKeyboardButton(text="Убрать", callback_data="sc:none")])
+def modes_kb(u: dict) -> InlineKeyboardMarkup:
+    cur = u.get("scenario")
+    rows = [[InlineKeyboardButton(text=("✅ " if cur == k else "") + v[0], callback_data=f"mode:{k}")]
+            for k, v in SCENARIOS.items() if mode_allowed(u, k)]
+    rows.append([InlineKeyboardButton(text=("✅ " if cur == "rp" else "") + "🎬 Ролевая игра", callback_data="mode:rp")])
+    gtxt = {"m": "парень", "f": "девушка"}.get(u.get("gender") or "", "не указан")
+    rows.append([InlineKeyboardButton(text=f"👤 Мой пол: {gtxt}", callback_data="mode:gender")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def rp_kb(u: dict) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=v[0], callback_data=f"rp:{k}")]
+            for k, v in RP_PLOTS.items() if plot_allowed(u, k)]
+    rows.append([InlineKeyboardButton(text="✍️ Свой сюжет", callback_data="rp:custom")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="mode:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def modes_text(u: dict) -> str:
+    return (f"Сейчас режим: {mode_label(u)}\n\n"
+            "Выбери, как будем общаться. История разговора при этом сохраняется.")
 
 
 # ---------- Фильтры и модерация ----------
@@ -896,7 +1028,13 @@ async def deliver_voice(chat_id: int, text: str) -> bool:
     try:
         async with ChatActionSender.record_voice(bot=bot, chat_id=chat_id):
             audio = await tts(clean)
-        await bot.send_voice(chat_id, BufferedInputFile(audio, "alisa.mp3"))
+        try:
+            await bot.send_voice(chat_id, BufferedInputFile(audio, "alisa.mp3"))
+        except Exception as e:
+            # Человек запретил в приватности голосовые: отправляем тем же звуком, но как аудиофайл
+            if "VOICE_MESSAGES_FORBIDDEN" not in str(e):
+                raise
+            await bot.send_audio(chat_id, BufferedInputFile(audio, "alisa.mp3"), title="Алиса", performer="Алиса")
         await add_to(chat_id, "total_voices", 1)
         return True
     except Exception as e:
@@ -938,7 +1076,11 @@ async def make_proactive(r: dict, instruction: str, fallbacks: list[str]) -> str
                     "ничего не выдумывай, пиши только текст сообщения. "
                     f"Заметка: {note}")
             if r.get("name"):
-                task += f" Его зовут {r['name']}."
+                task += f" Собеседника зовут {r['name']}."
+            if r.get("gender") == "f":
+                task += " Собеседница — девушка, ты её подруга, без флирта, обращайся в женском роде."
+            elif r.get("gender") == "m":
+                task += " Собеседник — парень."
             resp = await llm.chat.completions.create(
                 model=CHAT_MODEL_FREE, temperature=0.9,
                 messages=[{"role": "system", "content": PERSONA}, {"role": "user", "content": task}])
@@ -965,7 +1107,7 @@ async def nudge_loop() -> None:
             await asyncio.sleep(1800)
             ts = now_utc()
             rows = await fetch_all(
-                "SELECT id, name, memory_note, tz_offset FROM users WHERE adult=1 AND banned=0 AND notify=1 "
+                "SELECT id, name, memory_note, tz_offset, gender FROM users WHERE adult=1 AND banned=0 AND notify=1 "
                 "AND last_seen < ? AND last_seen > ? "
                 "AND (last_nudge IS NULL OR last_nudge < last_seen) LIMIT 200",
                 ((ts - timedelta(hours=NUDGE_AFTER_H)).isoformat(), (ts - timedelta(days=7)).isoformat()))
@@ -995,7 +1137,7 @@ async def morning_loop() -> None:
         try:
             await asyncio.sleep(1800)
             rows = await fetch_all(
-                "SELECT id, name, memory_note, tz_offset, last_morning FROM users "
+                "SELECT id, name, memory_note, tz_offset, gender, last_morning FROM users "
                 "WHERE adult=1 AND banned=0 AND notify=1 AND subscription_until > ?",
                 (now_utc().isoformat(),))
             for r in rows:
@@ -1074,6 +1216,9 @@ async def backup_loop() -> None:
 
 # ============================ MIDDLEWARE ============================
 
+# Служебные аккаунты Telegram (анонимный админ группы, пересылки из каналов, служебные уведомления)
+SERVICE_ACCOUNTS = {1087968824, 136817688, 777000}
+
 # Команды, доступные даже до подтверждения возраста
 PRE_AGE_COMMANDS = ("/start", "/paysupport", "/privacy", "/deleteme")
 
@@ -1090,6 +1235,18 @@ class Guard(BaseMiddleware):
             return await handler(event, data)
         uid = user.id
         is_msg = isinstance(event, types.Message)
+
+        # Бот работает только в личных сообщениях; группы и служебные аккаунты Telegram игнорируем
+        chat = event.chat if is_msg else (event.message.chat if event.message else None)
+        if chat is not None and chat.type != "private":
+            if is_msg and chat.type in ("group", "supergroup"):
+                try:
+                    await bot.leave_chat(chat.id)
+                except Exception:
+                    pass
+            return
+        if uid in SERVICE_ACCOUNTS or user.is_bot:
+            return
 
         if is_msg and event.successful_payment:  # платежи не трогаем никогда
             return await handler(event, data)
@@ -1162,8 +1319,14 @@ async def cmd_start(m: types.Message, command: CommandObject):
         await set_fields(uid, awaiting_name=1)
         await send_welcome_photo(m.chat.id)
         await m.answer("Привет. Я Алиса. А тебя как зовут?", reply_markup=main_kb)
+    elif u["name"] is None:
+        await m.answer("Привет 🙂 Так как тебя зовут?", reply_markup=main_kb)
     else:
-        await m.answer("Привет. Я Алиса.", reply_markup=main_kb)
+        # Ничего не сбрасываем: история, память и режим остаются
+        await m.answer(f"С возвращением, {u['name']}! 🙂 Я всё помню, продолжаем с того места, где остановились.",
+                       reply_markup=main_kb)
+        if u.get("gender") is None:
+            await m.answer("Кстати, ты парень или девушка? Так мне проще с тобой общаться.", reply_markup=GENDER_KB)
 
 
 @dp.callback_query(F.data.startswith("age:"))
@@ -1287,7 +1450,8 @@ async def cb_delete(c: types.CallbackQuery):
         await execute("DELETE FROM history WHERE user_id=?", (uid,))
         await execute("DELETE FROM photo_orders WHERE user_id=?", (uid,))
         await set_fields(uid, name=None, memory_note="", since_summary=0, scenario=None,
-                         awaiting_name=0, tg_username="", tg_name="")
+                         awaiting_name=0, tg_username="", tg_name="", gender=None, rp_plot=None,
+                         awaiting_plot=0)
     try:
         await c.message.edit_text("Готово: имя, история, заметка и сценарий удалены.")
     except Exception:
@@ -1348,22 +1512,133 @@ async def btn_profile(m: types.Message):
     await m.answer(text)
 
 
-@dp.message(F.text == "🎭 Сценарии")
-async def btn_scenarios(m: types.Message):
-    u = await get_user(m.from_user.id)
-    await m.answer("Сценарий:", reply_markup=scenario_kb(u["scenario"]))
+async def add_assistant_msg(uid: int, text: str) -> None:
+    """Сообщение Алисы, которое она пишет сама (не в ответ): сохраняем в историю для контекста."""
+    await execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "assistant", text))
 
 
-@dp.callback_query(F.data.startswith("sc:"))
-async def cb_scenario(c: types.CallbackQuery):
-    key = c.data.split(":", 1)[1]
-    new = None if key == "none" else (key if key in SCENARIOS else None)
-    await set_fields(c.from_user.id, scenario=new)
+async def start_roleplay(chat_id: int, uid: int, plot: str) -> None:
+    """Включает ролевую игру и отправляет первую реплику сцены (бесплатно, не списывает сообщения)."""
+    await set_fields(uid, scenario="rp", rp_plot=plot, awaiting_plot=0)
+    u = await get_user(uid)
+    opening = ""
     try:
-        await c.message.edit_reply_markup(reply_markup=scenario_kb(new))
+        async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
+            r = await llm.chat.completions.create(
+                model=CHAT_MODEL, temperature=0.9,
+                messages=[{"role": "system", "content": build_system(u)},
+                          {"role": "user", "content": "(Начни сцену первой: 1-3 предложения от лица своего "
+                                                      "персонажа, с короткой обстановкой в *звёздочках*. "
+                                                      "Не упоминай эту инструкцию.)"}])
+        opening = (r.choices[0].message.content or "").strip()
+    except Exception as e:
+        log.exception("Ошибка начала ролевой игры")
+        await notify_admin(f"Ошибка начала ролевой игры: {type(e).__name__}: {e}", "rp")
+    if not opening:
+        opening = "*Сцена начинается…* Твой ход 🙂"
+    await add_assistant_msg(uid, opening)
+    await bot.send_message(chat_id, "🎬 Ролевая игра началась. Выйти: «🎭 Режимы» → другой режим.\n\n" + opening)
+
+
+@dp.message(F.text.in_({"🎭 Режимы", "🎭 Сценарии"}))
+@dp.message(Command("mode"))
+async def btn_modes(m: types.Message):
+    u = await get_user(m.from_user.id)
+    await m.answer(modes_text(u), reply_markup=modes_kb(u))
+
+
+@dp.message(Command("gender"))
+async def cmd_gender(m: types.Message):
+    await m.answer("Ты парень или девушка?", reply_markup=GENDER_KB)
+
+
+@dp.callback_query(F.data.startswith("g:"))
+async def cb_gender(c: types.CallbackQuery):
+    uid = c.from_user.id
+    val = c.data.split(":", 1)[1]
+    if val not in ("m", "f", "x"):
+        await c.answer()
+        return
+    u = await get_user(uid)
+    first_time = u.get("gender") is None
+    fields = {"gender": val}
+    if val == "f" and (u.get("scenario") in ("evening", "spicy")
+                       or (u.get("scenario") == "rp" and u.get("rp_plot") in
+                           {v[1] for v in RP_PLOTS.values() if v[2] == "m"})):
+        fields.update(scenario=None, rp_plot=None)
+    await set_fields(uid, **fields)
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await c.answer("Готово")
+    reply = {"m": "Понял, запомнила 🙂", "f": "Ура, значит, будем подружками 💜", "x": "Окей, без проблем 🙂"}[val]
+    if first_time and u.get("name"):
+        reply += f"\n\n{WELCOME_TIPS}"
+    await c.message.answer(reply)
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("mode:"))
+async def cb_mode(c: types.CallbackQuery):
+    uid = c.from_user.id
+    key = c.data.split(":", 1)[1]
+    u = await get_user(uid)
+    if key == "rp":
+        try:
+            await c.message.edit_text("Выбери сюжет или придумай свой:", reply_markup=rp_kb(u))
+        except Exception:
+            pass
+        await c.answer()
+        return
+    if key == "gender":
+        await c.message.answer("Ты парень или девушка?", reply_markup=GENDER_KB)
+        await c.answer()
+        return
+    if key == "back":
+        try:
+            await c.message.edit_text(modes_text(u), reply_markup=modes_kb(u))
+        except Exception:
+            pass
+        await c.answer()
+        return
+    if not mode_allowed(u, key):
+        await c.answer("Этот режим недоступен", show_alert=True)
+        return
+    await set_fields(uid, scenario=key, rp_plot=None, awaiting_plot=0)
+    u = await get_user(uid)
+    try:
+        await c.message.edit_text(modes_text(u), reply_markup=modes_kb(u))
+    except Exception:
+        pass
+    await c.answer(SCENARIOS[key][0])
+    intro = MODE_INTROS[key]
+    if key == "chat" and u.get("gender") == "f":
+        intro = "Окей, просто болтаем 🙂 Рассказывай, что у тебя нового?"
+    await add_assistant_msg(uid, intro)
+    await c.message.answer(intro)
+
+
+@dp.callback_query(F.data.startswith("rp:"))
+async def cb_rp(c: types.CallbackQuery):
+    uid = c.from_user.id
+    key = c.data.split(":", 1)[1]
+    u = await get_user(uid)
+    if key == "custom":
+        await set_fields(uid, awaiting_plot=1)
+        await c.answer()
+        await c.message.answer("Опиши сюжет в паре предложений: где мы, кто ты и кто я.\n"
+                               "Например: «мы соседи, у тебя сломался замок, и ты стучишься ко мне ночью».")
+        return
+    if key not in RP_PLOTS or not plot_allowed(u, key):
+        await c.answer("Сюжет недоступен", show_alert=True)
+        return
+    await c.answer(RP_PLOTS[key][0])
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    async with user_lock(uid):
+        await start_roleplay(c.message.chat.id, uid, RP_PLOTS[key][1])
 
 
 @dp.message(F.text == "🛒 Магазин")
@@ -1511,6 +1786,19 @@ async def chat_core(m: types.Message, text: str) -> None:
                 await log_flag(uid, kind, text)
                 await notify_admin(f"🚩 {FLAG_LABELS[kind]}\n{who(u)} /u_{uid}\n«{text[:200]}»", f"jb:{uid}")
 
+        if u.get("awaiting_plot"):
+            await set_fields(uid, awaiting_plot=0)
+            plot = re.sub(r"\s+", " ", text).strip()[:500]
+            if len(plot) < 10:
+                await m.answer("Опиши сюжет чуть подробнее, хотя бы пару предложений: где мы и кто мы 🙂")
+                await set_fields(uid, awaiting_plot=1)
+                return
+            if not prompt_allowed(plot):
+                await m.answer("В ролевых играх все персонажи только взрослые. Придумай другой сюжет 🙂")
+                return
+            await start_roleplay(m.chat.id, uid, plot)
+            return
+
         # Запрос на фото проверяется раньше имени, чтобы «Фото на балконе» не стало именем
         photo_prompt = parse_photo_request(text)
         if photo_prompt is not None:
@@ -1523,7 +1811,11 @@ async def chat_core(m: types.Message, text: str) -> None:
                                and text.lower().strip(" !.,…") not in GREETINGS)
             if looks_like_name:
                 await set_fields(uid, name=name, awaiting_name=0)
-                await m.answer(f"Приятно познакомиться, {name}! О чём поболтаем?\n\n{WELCOME_TIPS}")
+                if u.get("gender") is None:
+                    await m.answer(f"Приятно познакомиться, {name}! Ты парень или девушка? "
+                                   "Так мне проще с тобой общаться 🙂", reply_markup=GENDER_KB)
+                else:
+                    await m.answer(f"Приятно познакомиться, {name}! О чём поболтаем?\n\n{WELCOME_TIPS}")
                 return
             # Человек сразу начал говорить, а не назвал имя: продолжаем как обычный чат
             await set_fields(uid, awaiting_name=0)
@@ -1773,7 +2065,8 @@ ADMIN_HELP = (
     "/promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ — создать промокод (пример: /promoadd WELCOME 20 0 100)\n"
     "/promolist · /promodel КОД — список и удаление промокодов\n"
     "/post [тема] — черновик поста в канал с фото (публикуется только по кнопке)\n"
-    "/chanhello — опубликовать и закрепить приветственный пост в канале"
+    "/chanhello — опубликовать и закрепить приветственный пост в канале\n"
+    "/update [текст] — разослать всем новое меню и сообщение об обновлении"
 )
 
 
@@ -1849,7 +2142,7 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
     else:
         sub_txt = "нет"
     ban_txt = f"ДА — {u['ban_reason'] or 'без причины'}" if u["banned"] else "нет"
-    scenario = SCENARIOS[u["scenario"]][0] if u["scenario"] in SCENARIOS else "нет"
+    scenario = mode_label(u)
     referrer = f"/u_{u['referrer']}" if u["referrer"] else "—"
     reg = u["created_at"][:16].replace("T", " ")
     seen = u["last_seen"][:16].replace("T", " ")
@@ -1871,7 +2164,8 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
         f"Голосовых: {u['total_voices']}, бесплатных осталось {u['free_voices']}",
         f"Серия бонусов: {u['streak']} дн.",
         f"Отношения: {rel_stage(u['relationship'])[0]} ({u['relationship']}/100)",
-        f"Сценарий: {scenario}",
+        f"Режим: {scenario}",
+        f"Пол: {dict(m='парень', f='девушка', x='не сказал').get(u.get('gender') or '', 'не указан')}",
         f"Пригласил: {invited} · Пришёл от: {referrer}",
         f"Флагов модерации: {flags_n}",
         f"Напоминания: {'вкл' if u['notify'] else 'выкл'} · пояс UTC{tz:+d}",
@@ -2012,12 +2306,18 @@ async def adm_stats(m: types.Message):
     rev_day = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0 AND created_at > ?", (day_ago,))
     voices = await scalar("SELECT SUM(total_voices) FROM users")
     promo_uses = await scalar("SELECT COUNT(*) FROM promo_uses")
+    msgs_total = await scalar("SELECT SUM(total_msgs) FROM users")
+    talkers = await scalar("SELECT COUNT(*) FROM users WHERE total_msgs > 0")
+    paying = await scalar("SELECT COUNT(DISTINCT user_id) FROM payments WHERE refunded=0")
     ref = "есть" if await get_reference() else "нет (/genref или /setref)"
     voice = "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)"
     await m.answer(
         f"Пользователей: {total} (подтвердили 18+: {confirmed})\n"
         f"Новых: за 24ч {new_day}, за 7 дней {new_week}\n"
         f"Активны за 24ч: {day}\nПодписчиков: {subs}\nЗаблокировано: {banned}\n"
+        f"Начали переписку: {talkers} из {confirmed}\n"
+        f"Сообщений Алисе всего: {msgs_total}\n"
+        f"Платящих: {paying}\n"
         f"Флагов модерации за 24ч: {flags_day}\n"
         f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)\n"
         f"Использований промокодов: {promo_uses}\n"
@@ -2289,6 +2589,23 @@ async def adm_refund(m: types.Message, command: CommandObject):
         await m.answer(f"Ошибка возврата: {e}")
 
 
+@dp.message(Command("update"), ADMIN)
+async def adm_update(m: types.Message, command: CommandObject):
+    """Рассылает всем новое меню кнопок (оно само не обновляется) и короткое сообщение."""
+    text = (command.args or "").strip() or UPDATE_TEXT
+    rows = await fetch_all("SELECT id FROM users WHERE banned=0 AND adult=1")
+    await m.answer(f"Рассылаю обновление {len(rows)} пользователям...")
+    ok = fail = 0
+    for r in rows:
+        try:
+            await bot.send_message(r["id"], text, reply_markup=main_kb, disable_notification=True)
+            ok += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05)
+    await m.answer(f"Готово. Доставлено: {ok}, не доставлено (заблокировали бота и т.п.): {fail}")
+
+
 @dp.message(Command("broadcast"), ADMIN)
 async def adm_broadcast(m: types.Message, command: CommandObject):
     if not command.args:
@@ -2516,6 +2833,8 @@ async def main():
         BotCommand(command="reset", description="Очистить историю"),
         BotCommand(command="ref", description="Пригласить друзей"),
         BotCommand(command="channel", description="Канал Алисы и бонус за подписку"),
+        BotCommand(command="mode", description="Режим общения и ролевые игры"),
+        BotCommand(command="gender", description="Указать пол"),
         BotCommand(command="promo", description="Ввести промокод"),
         BotCommand(command="tz", description="Часовой пояс"),
         BotCommand(command="notify", description="Напоминания от Алисы вкл/выкл"),
