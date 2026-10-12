@@ -48,23 +48,26 @@ IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
 # Модель для генерации по референсу (/v1/images/edits). Если вернёт ошибку про модель,
 # попробуй значения grok-imagine-image или grok-imagine-image-2.0
 IMAGE_EDIT_MODEL = env("IMAGE_EDIT_MODEL", IMAGE_MODEL)
-SUPPORT_CONTACT = "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN"
+# Свой @username для вопросов по оплате: лучше задать переменной SUPPORT_CONTACT на Railway
+SUPPORT_CONTACT = env("SUPPORT_CONTACT", "@NNNNNNNNNNNNNMNNNNNNNNNNNNNNNNNN")
 # Внешность Алисы текстом. Используется для эталонного фото (/genref) и как запасной вариант,
 # если эталона нет или генерация по референсу не сработала
 APPEARANCE = env("APPEARANCE", "adult woman, 23 years old, long dark hair, brown eyes, natural look")
 BACKUP_ENABLED = env("BACKUP_ENABLED", "1") == "1"
-NUDGES_ENABLED = env("NUDGES_ENABLED", "1") == "1"
+NUDGES_ENABLED = env("NUDGES_ENABLED", "1") == "1"   # напоминания «скучаю» и «доброе утро» подписчикам
 REG_ALERTS = env("REG_ALERTS", "1") == "1"   # присылать админу сообщение о каждом новом пользователе
 
 # Голосовые (ElevenLabs). Ключ и ID голоса задаются переменными окружения на Railway
 ELEVEN_API_KEY = env("ELEVEN_API_KEY")
 ELEVEN_VOICE_ID = env("ELEVEN_VOICE_ID")
 ELEVEN_MODEL = env("ELEVEN_MODEL", "eleven_multilingual_v2")
+ELEVEN_STT_MODEL = env("ELEVEN_STT_MODEL", "scribe_v1")   # распознавание голосовых от пользователя
 VOICE_ENABLED = bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)
 VOICE_PRICE = 20            # звёзд за одно голосовое для тех, у кого нет подписки
 VOICE_MAX_CHARS = 600       # длиннее обрезаем, чтобы не тратить символы
 VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
 FREE_VOICES = 2             # бесплатных озвучек каждому новому пользователю
+VOICE_IN_MAX_SEC = 60       # голосовые пользователя длиннее этого не распознаём
 
 FREE_MESSAGES = 30          # бесплатных сообщений на пользователя
 HISTORY_IN_PROMPT = 12      # сколько последних сообщений уходит в модель
@@ -81,6 +84,12 @@ PHOTO_PRICE = 50
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 WARN_LIMIT = 3              # столько предупреждений, и доступ закрывается автоматически
+
+DEFAULT_TZ = 3              # часовой пояс по умолчанию (UTC+3), человек меняет командой /tz
+NUDGE_HOURS = (9, 21)       # в какое местное время можно писать первой
+MORNING_HOURS = (8, 11)     # окно местного времени для «доброго утра» подписчикам
+FIRST_DISCOUNT_PCT = 30     # скидка на первую покупку, %
+FIRST_DISCOUNT_HOURS = 24   # сколько часов после регистрации действует скидка
 
 # Цены и наборы можно свободно менять
 PRODUCTS = {
@@ -103,6 +112,12 @@ NUDGES = [
     "Вспомнила про тебя. Как дела?",
     "Эй, давно тебя не слышала. Как жизнь? 😊",
     "Мне стало интересно, как ты там. Расскажешь?",
+]
+MORNINGS = [
+    "Доброе утро! Как спалось? ☀️",
+    "Привет! Новый день, какие планы?",
+    "Доброе утро 🙂 Надеюсь, день сложится классно. Расскажешь потом, как прошёл?",
+    "С добрым утром! Я уже думаю, о чём мы сегодня поболтаем 😊",
 ]
 
 PERSONA = (
@@ -135,10 +150,28 @@ main_kb = ReplyKeyboardMarkup(keyboard=[
 ], resize_keyboard=True)
 
 WELCOME_TIPS = (
-    "Можно просто писать мне. А если хочешь фото, напиши «фото» и описание, "
+    "Можно просто писать мне или присылать голосовые. А если хочешь фото, напиши «фото» и описание, "
     "например «фото в красном платье на балконе»."
     + (f"\n\nПод моими ответами есть кнопка «🔊 Озвучить»: первые {FREE_VOICES} озвучки бесплатно."
        if VOICE_ENABLED else "")
+)
+
+# Приветственное фото Алисы: подпись под ним. Меняй текст как хочешь.
+ABOUT_ME = (
+    "Мне 23, я люблю долгие разговоры, музыку по вечерам и узнавать новых людей. "
+    "Открыта к общению на любые темы, задавай вопросы 🙂"
+)
+
+PRIVACY_TEXT = (
+    "🔒 Конфиденциальность\n\n"
+    "Что хранится: твой Telegram-ID, имя и @ник, последние сообщения диалога (около {keep}), "
+    "короткая заметка Алисы о тебе, платежи и технические счётчики.\n\n"
+    "Как используется: сообщения отправляются сервисам, которые генерируют ответы (xAI) и голос (ElevenLabs). "
+    "Администратор бота может просматривать диалоги для поддержки и безопасности.\n\n"
+    "/reset — очистить историю и заметку\n"
+    "/deleteme — удалить свои данные: имя, историю, заметку и сценарии. "
+    "Запись об оплатах и технические счётчики остаются: они нужны для учёта платежей и защиты от злоупотреблений.\n\n"
+    "Вопросы: {support}"
 )
 
 REFUSED_TEXT = "Генератор отклонил этот запрос по своим правилам модерации. Попробуй описать иначе."
@@ -232,6 +265,9 @@ CREATE TABLE IF NOT EXISTS users (
     total_msgs INTEGER NOT NULL DEFAULT 0,
     total_photos INTEGER NOT NULL DEFAULT 0,
     total_voices INTEGER NOT NULL DEFAULT 0,
+    tz_offset INTEGER NOT NULL DEFAULT {DEFAULT_TZ},
+    last_morning TEXT,
+    expiry_notified TEXT,
     created_at TEXT NOT NULL,
     last_seen TEXT NOT NULL
 );
@@ -267,6 +303,20 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value BLOB
 );
+CREATE TABLE IF NOT EXISTS promo_codes (
+    code TEXT PRIMARY KEY,
+    messages INTEGER NOT NULL DEFAULT 0,
+    sub_days INTEGER NOT NULL DEFAULT 0,
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS promo_uses (
+    code TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (code, user_id)
+);
 """
 
 # Колонки, которые добавляются в уже существующую базу при запуске
@@ -282,6 +332,9 @@ NEW_COLS = {
     "total_msgs": "INTEGER NOT NULL DEFAULT 0",
     "total_photos": "INTEGER NOT NULL DEFAULT 0",
     "total_voices": "INTEGER NOT NULL DEFAULT 0",
+    "tz_offset": f"INTEGER NOT NULL DEFAULT {DEFAULT_TZ}",
+    "last_morning": "TEXT",
+    "expiry_notified": "TEXT",
 }
 
 USER_FIELDS = {
@@ -289,7 +342,7 @@ USER_FIELDS = {
     "awaiting_name", "subscription_until", "bonus_claimed", "adult", "referrer",
     "ref_rewarded", "memory_note", "since_summary", "banned", "last_nudge", "notify",
     "tg_username", "tg_name", "warnings", "ban_reason", "streak", "free_voices",
-    "total_msgs", "total_photos", "total_voices",
+    "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -410,6 +463,17 @@ def has_sub(u: dict) -> bool:
     return bool(u.get("subscription_until")) and parse_dt(u["subscription_until"]) > now_utc()
 
 
+def pick_source(u: dict, admin: bool) -> str | None:
+    """Откуда списывается сообщение: unlimited / free / paid, либо None, если лимит исчерпан."""
+    if admin or has_sub(u):
+        return "unlimited"
+    if u["messages"] < FREE_MESSAGES:
+        return "free"
+    if u["paid"] > 0:
+        return "paid"
+    return None
+
+
 def rel_stage(p: int) -> tuple[str, str]:
     if p < 25:
         return "знакомство", "Вы только знакомитесь: ты дружелюбна, любопытна, чуть сдержанна."
@@ -461,10 +525,40 @@ def spawn(coro) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
-def shop_kb() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=f"{p['title']} — {p['price']}⭐", callback_data=f"buy:{k}")]
-            for k, p in PRODUCTS.items()]
+# ---------- Магазин и скидка на первую покупку ----------
+
+async def user_discount(uid: int) -> int:
+    """Скидка в процентах: только пока не было ни одной оплаты и не прошло FIRST_DISCOUNT_HOURS после регистрации."""
+    u = await fetch_one("SELECT created_at FROM users WHERE id=?", (uid,))
+    if not u:
+        return 0
+    if now_utc() - parse_dt(u["created_at"]) >= timedelta(hours=FIRST_DISCOUNT_HOURS):
+        return 0
+    paid_n = await scalar("SELECT COUNT(*) FROM payments WHERE user_id=? AND refunded=0", (uid,))
+    return FIRST_DISCOUNT_PCT if paid_n == 0 else 0
+
+
+def price_for(key: str, pct: int) -> int:
+    return max(1, round(PRODUCTS[key]["price"] * (100 - pct) / 100))
+
+
+async def shop_markup(uid: int) -> InlineKeyboardMarkup:
+    pct = await user_discount(uid)
+    rows = []
+    for k, p in PRODUCTS.items():
+        price = price_for(k, pct)
+        label = f"{p['title']} — {price}⭐" + (f" (было {p['price']})" if pct else "")
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy:{k}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def send_shop(m: types.Message) -> None:
+    uid = m.from_user.id
+    pct = await user_discount(uid)
+    text = "Магазин:"
+    if pct:
+        text = f"🔥 Скидка {pct}% на первую покупку: действует {FIRST_DISCOUNT_HOURS} часа после регистрации.\n\nМагазин:"
+    await m.answer(text, reply_markup=await shop_markup(uid))
 
 
 def scenario_kb(current: str | None) -> InlineKeyboardMarkup:
@@ -485,9 +579,10 @@ _BLOCK_RU = re.compile(
 _AGE = re.compile(
     r"\b(\d{1,2})\s*(?:-?\s*летн\w*|лет\b|года\b|год\b|y\.?\s?o\b\.?|years?\b(?:\s*old)?)(?!\s*(?:назад|ago))",
     re.I)
+# Корни слов ищем только в начале слова: «страх», «закончил», «спорный» больше не срабатывают
 _SEXUAL_RE = re.compile(
-    r"(секс|трах|порно|порн|эротик|интим|голая|голый|голые|голых|обнажённ|обнажен|раздев|минет|сиськ|письк|"
-    r"кончи|возбуд|\bsex|fuck|porn|nude|naked|erotic|blowjob|\bcum\b|horny)", re.I)
+    r"(?<![а-яёa-z])(?:секс|трах|порно|порн|эротик|интим|голая|голый|голые|голых|обнажённ|обнажен|раздев(?!алк)|"
+    r"минет|сиськ|письк|кончи|возбуд|sex|fuck|porn|nude|naked|erotic|blowjob|cum\b|horny)", re.I)
 # Человек пишет о себе, что ему нет 18
 _SELF_MINOR = re.compile(
     r"\bмне\s+(\d{1,2})\s*(?:лет|года|год)\b"
@@ -693,6 +788,17 @@ async def photo_with_credit(chat_id: int, uid: int, prompt: str) -> None:
                          "Напиши «фото описание» ещё раз, попробуй сформулировать иначе.")
 
 
+async def send_welcome_photo(chat_id: int) -> None:
+    """Приветственное фото Алисы с коротким описанием. Работает, если сохранён эталон (/genref + /setref)."""
+    try:
+        ref = await get_reference()
+        if not ref:
+            return
+        await bot.send_photo(chat_id, BufferedInputFile(ref, "alisa.jpg"), caption=ABOUT_ME)
+    except Exception:
+        log.exception("Ошибка отправки приветственного фото")
+
+
 # ---------- Голосовые (ElevenLabs) ----------
 
 _EMOJI_RE = re.compile(
@@ -749,6 +855,20 @@ async def tts(text: str) -> bytes:
     return r.content
 
 
+async def stt(audio: bytes) -> str:
+    """Распознаёт голосовое сообщение пользователя (ElevenLabs speech-to-text)."""
+    async with httpx.AsyncClient(timeout=90) as http:
+        r = await http.post(
+            "https://api.elevenlabs.io/v1/speech-to-text",
+            headers={"xi-api-key": ELEVEN_API_KEY},
+            data={"model_id": ELEVEN_STT_MODEL},
+            files={"file": ("voice.ogg", audio, "audio/ogg")},
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(f"elevenlabs stt {r.status_code}: {r.text[:300]}")
+    return (r.json().get("text") or "").strip()
+
+
 async def deliver_voice(chat_id: int, text: str) -> bool:
     """Озвучивает текст и отправляет голосовым. True, если получилось."""
     clean = clean_for_voice(text)
@@ -788,12 +908,13 @@ async def update_memory(uid: int) -> None:
 
 # ============================ ФОНОВЫЕ ЗАДАЧИ ============================
 
-async def make_nudge(r: dict) -> str:
-    """Текст напоминания: по заметке о человеке, а если заметки нет или модель не ответила, из запасного списка."""
+async def make_proactive(r: dict, instruction: str, fallbacks: list[str]) -> str:
+    """Текст сообщения, которое Алиса пишет первой: по заметке о человеке, а если заметки нет
+    или модель не ответила, из запасного списка."""
     note = (r.get("memory_note") or "").strip()
     if note:
         try:
-            task = ("Ты сама пишешь первой после долгой паузы. Напиши ОДНО короткое сообщение (1-2 предложения). "
+            task = (f"{instruction} Напиши ОДНО короткое сообщение (1-2 предложения). "
                     "Тёплый тон, без упрёков и давления. Опирайся только на заметку о собеседнике, "
                     "ничего не выдумывай, пиши только текст сообщения. "
                     f"Заметка: {note}")
@@ -806,38 +927,105 @@ async def make_nudge(r: dict) -> str:
             if text:
                 return text[:300]
         except Exception:
-            log.exception("Ошибка генерации напоминания")
-    text = random.choice(NUDGES)
+            log.exception("Ошибка генерации проактивного сообщения")
+    text = random.choice(fallbacks)
     if r.get("name"):
         text = f"{r['name']}, {text[0].lower()}{text[1:]}"
     return text
 
 
+def local_now(tz_offset: int | None) -> datetime:
+    return now_utc() + timedelta(hours=DEFAULT_TZ if tz_offset is None else tz_offset)
+
+
 async def nudge_loop() -> None:
-    """Алиса пишет первой тем, кто молчит больше суток. Один раз за период тишины, только днём (UTC 8-20)."""
+    """Алиса пишет первой тем, кто молчит больше суток. Один раз за период тишины,
+    только в дневное время по часовому поясу человека."""
     while True:
         try:
             await asyncio.sleep(1800)
             ts = now_utc()
-            if not (8 <= ts.hour < 20):
-                continue
             rows = await fetch_all(
-                "SELECT id, name, memory_note FROM users WHERE adult=1 AND banned=0 AND notify=1 "
+                "SELECT id, name, memory_note, tz_offset FROM users WHERE adult=1 AND banned=0 AND notify=1 "
                 "AND last_seen < ? AND last_seen > ? "
-                "AND (last_nudge IS NULL OR last_nudge < last_seen) LIMIT 30",
+                "AND (last_nudge IS NULL OR last_nudge < last_seen) LIMIT 200",
                 ((ts - timedelta(hours=NUDGE_AFTER_H)).isoformat(), (ts - timedelta(days=7)).isoformat()))
+            sent = 0
             for r in rows:
-                text = await make_nudge(r) + "\n\n/notify — отключить такие сообщения"
+                if not (NUDGE_HOURS[0] <= local_now(r["tz_offset"]).hour < NUDGE_HOURS[1]):
+                    continue
+                if sent >= 30:
+                    break
+                text = await make_proactive(r, "Ты сама пишешь первой после долгой паузы.", NUDGES)
                 try:
-                    await bot.send_message(r["id"], text)
+                    await bot.send_message(r["id"], text + "\n\n/notify — отключить такие сообщения")
                 except Exception:
                     pass  # пользователь заблокировал бота и т.п.
                 await set_fields(r["id"], last_nudge=now_utc().isoformat())
+                sent += 1
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Ошибка рассылки напоминаний")
+
+
+async def morning_loop() -> None:
+    """Подписчикам раз в сутки утром (по их часовому поясу) приходит «доброе утро» от Алисы."""
+    while True:
+        try:
+            await asyncio.sleep(1800)
+            rows = await fetch_all(
+                "SELECT id, name, memory_note, tz_offset, last_morning FROM users "
+                "WHERE adult=1 AND banned=0 AND notify=1 AND subscription_until > ?",
+                (now_utc().isoformat(),))
+            for r in rows:
+                local = local_now(r["tz_offset"])
+                if not (MORNING_HOURS[0] <= local.hour < MORNING_HOURS[1]):
+                    continue
+                day = local.strftime("%Y-%m-%d")
+                if r["last_morning"] == day:
+                    continue
+                await set_fields(r["id"], last_morning=day)   # помечаем заранее, чтобы не слать дважды
+                text = await make_proactive(r, "Ты пишешь первой, чтобы пожелать доброго утра.", MORNINGS)
+                try:
+                    await bot.send_message(r["id"], text + "\n\n/notify — отключить такие сообщения")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Ошибка утренней рассылки")
+
+
+async def expiry_loop() -> None:
+    """За сутки до конца подписки напоминает о продлении (один раз на каждую дату окончания)."""
+    while True:
+        try:
+            await asyncio.sleep(1800)
+            ts = now_utc()
+            rows = await fetch_all(
+                "SELECT id, subscription_until FROM users WHERE banned=0 AND adult=1 "
+                "AND subscription_until > ? AND subscription_until < ? "
+                "AND (expiry_notified IS NULL OR expiry_notified != subscription_until)",
+                (ts.isoformat(), (ts + timedelta(hours=24)).isoformat()))
+            for r in rows:
+                until = parse_dt(r["subscription_until"])
+                await set_fields(r["id"], expiry_notified=r["subscription_until"])
+                try:
+                    await bot.send_message(
+                        r["id"],
+                        f"Твоя подписка заканчивается {until:%d.%m.%Y в %H:%M} (UTC). "
+                        "Продли заранее, чтобы мы не прерывались 🙂",
+                        reply_markup=await shop_markup(r["id"]))
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Ошибка напоминаний о подписке")
 
 
 async def backup_loop() -> None:
@@ -866,6 +1054,10 @@ async def backup_loop() -> None:
 
 
 # ============================ MIDDLEWARE ============================
+
+# Команды, доступные даже до подтверждения возраста
+PRE_AGE_COMMANDS = ("/start", "/paysupport", "/privacy", "/deleteme")
+
 
 class Guard(BaseMiddleware):
     """Антифлуд, бан и возрастной гейт 18+ для сообщений и кнопок. Заодно обновляет имя и @ник в базе."""
@@ -901,11 +1093,11 @@ class Guard(BaseMiddleware):
         if is_admin(uid) or u["adult"] == 1:
             return await handler(event, data)
 
-        # Возраст ещё не подтверждён: пропускаем только /start, /paysupport и кнопки возраста
+        # Возраст ещё не подтверждён: пропускаем только служебные команды и кнопки возраста
         cmd = event.text.split()[0].split("@")[0] if is_msg and event.text else ""
-        if cmd in ("/start", "/paysupport"):
+        if cmd in PRE_AGE_COMMANDS:
             return await handler(event, data)
-        if not is_msg and (event.data or "").startswith("age:"):
+        if not is_msg and (event.data or "").startswith(("age:", "del:")):
             return await handler(event, data)
 
         if is_msg:
@@ -949,6 +1141,7 @@ async def cmd_start(m: types.Message, command: CommandObject):
             return
     if u["name"] is None and not u["awaiting_name"]:
         await set_fields(uid, awaiting_name=1)
+        await send_welcome_photo(m.chat.id)
         await m.answer("Привет. Я Алиса. А тебя как зовут?", reply_markup=main_kb)
     else:
         await m.answer("Привет. Я Алиса.", reply_markup=main_kb)
@@ -983,6 +1176,7 @@ async def age_cb(c: types.CallbackQuery):
             await c.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
+        await send_welcome_photo(c.message.chat.id)
         await c.message.answer("Привет. Я Алиса. А тебя как зовут?", reply_markup=main_kb)
     else:
         await set_fields(uid, adult=-1)
@@ -1023,10 +1217,95 @@ async def cmd_notify(m: types.Message):
     await m.answer("Хорошо, буду иногда писать первой 🙂" if new else "Ок, первой писать не буду.")
 
 
+@dp.message(Command("tz"))
+async def cmd_tz(m: types.Message, command: CommandObject):
+    uid = m.from_user.id
+    u = await get_user(uid)
+    arg = (command.args or "").strip().lower().replace("utc", "").replace("gmt", "").strip()
+    if re.fullmatch(r"[+-]?\d{1,2}", arg) and -12 <= int(arg) <= 14:
+        tz = int(arg)
+        await set_fields(uid, tz_offset=tz)
+        await m.answer(f"Запомнила: твой часовой пояс UTC{tz:+d}. Сейчас у тебя {local_now(tz):%H:%M}. "
+                       "Теперь не буду писать первой ночью.")
+    else:
+        cur = u["tz_offset"] if u["tz_offset"] is not None else DEFAULT_TZ
+        await m.answer(f"Твой часовой пояс: UTC{cur:+d} (сейчас {local_now(cur):%H:%M}).\n"
+                       "Чтобы изменить, напиши, например: /tz +3 (Москва), /tz +5, /tz 0, /tz -5")
+
+
 @dp.message(Command("paysupport"))
 async def cmd_paysupport(m: types.Message):
     await m.answer(f"По вопросам оплаты и возвратов пиши сюда: {SUPPORT_CONTACT}. "
                    "Укажи, что и когда покупал.")
+
+
+@dp.message(Command("privacy"))
+async def cmd_privacy(m: types.Message):
+    await m.answer(PRIVACY_TEXT.format(keep=HISTORY_KEEP, support=SUPPORT_CONTACT))
+
+
+@dp.message(Command("deleteme"))
+async def cmd_deleteme(m: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Да, удалить", callback_data="del:yes"),
+        InlineKeyboardButton(text="Отмена", callback_data="del:no"),
+    ]])
+    await m.answer("Удалить твоё имя, историю диалога, заметку Алисы и выбранный сценарий? "
+                   "Это нельзя отменить. Данные об оплатах остаются (подробнее: /privacy).", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("del:"))
+async def cb_delete(c: types.CallbackQuery):
+    uid = c.from_user.id
+    if c.data != "del:yes":
+        try:
+            await c.message.edit_text("Хорошо, ничего не удаляю.")
+        except Exception:
+            pass
+        await c.answer()
+        return
+    async with user_lock(uid):
+        await execute("DELETE FROM history WHERE user_id=?", (uid,))
+        await execute("DELETE FROM photo_orders WHERE user_id=?", (uid,))
+        await set_fields(uid, name=None, memory_note="", since_summary=0, scenario=None,
+                         awaiting_name=0, tg_username="", tg_name="")
+    try:
+        await c.message.edit_text("Готово: имя, история, заметка и сценарий удалены.")
+    except Exception:
+        pass
+    await c.answer()
+
+
+@dp.message(Command("promo"))
+async def cmd_promo(m: types.Message, command: CommandObject):
+    uid = m.from_user.id
+    code = (command.args or "").strip().upper()
+    if not code:
+        await m.answer("Напиши промокод так: /promo КОД")
+        return
+    async with user_lock(uid):
+        row = await fetch_one("SELECT * FROM promo_codes WHERE code=?", (code,))
+        if not row:
+            await m.answer("Такого промокода нет.")
+            return
+        cur = await execute("INSERT OR IGNORE INTO promo_uses (code, user_id, created_at) VALUES (?,?,?)",
+                            (code, uid, now_utc().isoformat()))
+        if cur.rowcount == 0:
+            await m.answer("Ты уже использовал этот промокод.")
+            return
+        cur = await execute("UPDATE promo_codes SET used=used+1 WHERE code=? AND used<max_uses", (code,))
+        if cur.rowcount == 0:
+            await execute("DELETE FROM promo_uses WHERE code=? AND user_id=?", (code, uid))
+            await m.answer("Этот промокод уже закончился.")
+            return
+        parts = []
+        if row["messages"] > 0:
+            await add_to(uid, "paid", row["messages"])
+            parts.append(f"+{row['messages']} сообщений")
+        if row["sub_days"] > 0:
+            until = await grant_sub(uid, row["sub_days"], notify_user=False)
+            parts.append(f"подписка до {until:%d.%m.%Y %H:%M} (UTC)")
+    await m.answer("Промокод активирован 🎁 " + ", ".join(parts))
 
 
 @dp.message(F.text == "💬 Чат")
@@ -1070,7 +1349,7 @@ async def cb_scenario(c: types.CallbackQuery):
 
 @dp.message(F.text == "🛒 Магазин")
 async def btn_shop(m: types.Message):
-    await m.answer("Магазин:", reply_markup=shop_kb())
+    await send_shop(m)
 
 
 def streak_reward(streak: int) -> int:
@@ -1123,7 +1402,9 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
     uid = m.from_user.id
     prompt = prompt or "портрет, лёгкая улыбка"
     if not prompt_allowed(prompt):
-        if is_admin(uid):
+        # Предупреждение выдаём только если в запросе есть и несовершеннолетний, и сексуальный контекст.
+        # Обычный отказ (например «фото ребёнка на площадке») предупреждением не считается.
+        if is_admin(uid) or not _SEXUAL_RE.search(prompt):
             await m.answer("Такое я генерировать не буду.")
         else:
             await handle_flag(m, u, "photo_minor", prompt)
@@ -1145,9 +1426,8 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         await m.answer("Сгенерировать фото?", reply_markup=kb)
 
 
-@dp.message(F.text, ~F.text.startswith("/"))
-async def chat(m: types.Message):
-    text = m.text.strip()
+async def chat_core(m: types.Message, text: str) -> None:
+    """Обработка текста от пользователя (набранного или распознанного из голосового)."""
     uid = m.from_user.id
     async with user_lock(uid):
         u = await get_user(uid)
@@ -1180,15 +1460,10 @@ async def chat(m: types.Message):
             # Человек сразу начал говорить, а не назвал имя: продолжаем как обычный чат
             await set_fields(uid, awaiting_name=0)
 
-        if admin or has_sub(u):
-            source = "unlimited"
-        elif u["messages"] < FREE_MESSAGES:
-            source = "free"
-        elif u["paid"] > 0:
-            source = "paid"
-        else:
-            await m.answer("Бесплатные сообщения закончились. Можно забрать 🎁 бонус или выбрать пакет:",
-                           reply_markup=shop_kb())
+        source = pick_source(u, admin)
+        if source is None:
+            await m.answer("Бесплатные сообщения закончились. Можно забрать 🎁 бонус, ввести /promo или выбрать пакет:",
+                           reply_markup=await shop_markup(uid))
             return
 
         model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
@@ -1214,7 +1489,42 @@ async def chat(m: types.Message):
         await send_long(m, ans, voice_kb(aid) if VOICE_ENABLED else None)
 
 
-# ============================ ГОЛОСОВЫЕ ============================
+@dp.message(F.text, ~F.text.startswith("/"))
+async def chat(m: types.Message):
+    await chat_core(m, m.text.strip())
+
+
+@dp.message(F.voice)
+async def on_voice(m: types.Message):
+    """Голосовое сообщение от пользователя: распознаём и отвечаем как на обычный текст."""
+    uid = m.from_user.id
+    if not ELEVEN_API_KEY:
+        await m.answer("Голосовые я пока не слушаю, напиши текстом 🙂")
+        return
+    if m.voice.duration and m.voice.duration > VOICE_IN_MAX_SEC:
+        await m.answer(f"Голосовое длиннее {VOICE_IN_MAX_SEC} секунд, запиши покороче или напиши текстом 🙂")
+        return
+    u = await get_user(uid)
+    if pick_source(u, is_admin(uid)) is None:
+        await m.answer("Бесплатные сообщения закончились. Можно забрать 🎁 бонус, ввести /promo или выбрать пакет:",
+                       reply_markup=await shop_markup(uid))
+        return
+    try:
+        async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
+            buf = await bot.download(m.voice)
+            text = await stt(buf.read())
+    except Exception as e:
+        log.exception("Ошибка распознавания голосового")
+        await notify_admin(f"Ошибка распознавания голосового: {type(e).__name__}: {e}", "stt")
+        await m.answer("Не получилось разобрать голосовое, напиши текстом 🙂")
+        return
+    if not text:
+        await m.answer("Я ничего не расслышала, попробуй ещё раз или напиши текстом 🙂")
+        return
+    await chat_core(m, text[:2000])
+
+
+# ============================ ГОЛОСОВЫЕ ОТВЕТЫ ============================
 
 @dp.callback_query(F.data.startswith("vo:"))
 async def cb_voice(c: types.CallbackQuery):
@@ -1270,14 +1580,17 @@ async def cb_voice(c: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("buy:"))
 async def cb_buy(c: types.CallbackQuery):
-    product = PRODUCTS.get(c.data.split(":", 1)[1])
+    key = c.data.split(":", 1)[1]
+    product = PRODUCTS.get(key)
     if not product:
         await c.answer("Товар не найден", show_alert=True)
         return
+    pct = await user_discount(c.from_user.id)
+    title = product["title"] + (f" (-{pct}%)" if pct else "")
     await bot.send_invoice(
-        chat_id=c.from_user.id, title=product["title"], description="Покупка в боте",
-        payload=c.data.split(":", 1)[1], currency="XTR",
-        prices=[LabeledPrice(label=product["title"], amount=product["price"])])
+        chat_id=c.from_user.id, title=title, description="Покупка в боте",
+        payload=key, currency="XTR",
+        prices=[LabeledPrice(label=title, amount=price_for(key, pct))])
     await c.answer()
 
 
@@ -1388,7 +1701,9 @@ ADMIN_HELP = (
     "/flags [ID] — подозрительные сообщения\n"
     "/history ID · /payments ID\n"
     "/refund USER_ID CHARGE_ID · /broadcast текст\n"
-    "/genref · /setref · /delref — эталон внешности"
+    "/genref · /setref · /delref — эталон внешности (нужен для приветственного фото)\n"
+    "/promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ — создать промокод (пример: /promoadd WELCOME 20 0 100)\n"
+    "/promolist · /promodel КОД — список и удаление промокодов"
 )
 
 
@@ -1468,6 +1783,7 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
     referrer = f"/u_{u['referrer']}" if u["referrer"] else "—"
     reg = u["created_at"][:16].replace("T", " ")
     seen = u["last_seen"][:16].replace("T", " ")
+    tz = u["tz_offset"] if u["tz_offset"] is not None else DEFAULT_TZ
     lines = [
         f"👤 {who(u)}",
         f"Зарегистрирован: {reg} UTC",
@@ -1488,7 +1804,7 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
         f"Сценарий: {scenario}",
         f"Пригласил: {invited} · Пришёл от: {referrer}",
         f"Флагов модерации: {flags_n}",
-        f"Напоминания: {'вкл' if u['notify'] else 'выкл'}",
+        f"Напоминания: {'вкл' if u['notify'] else 'выкл'} · пояс UTC{tz:+d}",
     ]
     if u["memory_note"]:
         lines += ["", "Заметка Алисы: " + u["memory_note"][:400]]
@@ -1558,7 +1874,8 @@ async def _save_reference(m: types.Message, photo: types.PhotoSize) -> None:
     buf = await bot.download(photo)
     data = buf.read()
     await set_reference(data)
-    await m.answer("Эталонное фото Алисы сохранено. Теперь все фото будут генерироваться с этой внешностью. "
+    await m.answer("Эталонное фото Алисы сохранено. Теперь все фото будут генерироваться с этой внешностью, "
+                   "а новые пользователи будут получать его как приветственное. "
                    "Проверь: «фото на пляже». Убрать эталон: /delref")
 
 
@@ -1604,7 +1921,8 @@ async def adm_genref(m: types.Message, command: CommandObject):
 @dp.message(Command("delref"), ADMIN)
 async def adm_delref(m: types.Message):
     await clear_reference()
-    await m.answer("Эталон удалён. Фото снова генерируются только по текстовому описанию внешности.")
+    await m.answer("Эталон удалён. Фото снова генерируются только по текстовому описанию внешности, "
+                   "приветственное фото отправляться не будет.")
 
 
 @dp.message(Command("stats"), ADMIN)
@@ -1623,6 +1941,7 @@ async def adm_stats(m: types.Message):
     rev = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0")
     rev_day = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0 AND created_at > ?", (day_ago,))
     voices = await scalar("SELECT SUM(total_voices) FROM users")
+    promo_uses = await scalar("SELECT COUNT(*) FROM promo_uses")
     ref = "есть" if await get_reference() else "нет (/genref или /setref)"
     voice = "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)"
     await m.answer(
@@ -1631,6 +1950,7 @@ async def adm_stats(m: types.Message):
         f"Активны за 24ч: {day}\nПодписчиков: {subs}\nЗаблокировано: {banned}\n"
         f"Флагов модерации за 24ч: {flags_day}\n"
         f"Выручка: {rev}⭐ (за 24ч: {rev_day}⭐)\n"
+        f"Использований промокодов: {promo_uses}\n"
         f"Эталон внешности: {ref}\nГолосовые: {voice}, озвучено всего: {voices}")
 
 
@@ -1782,6 +2102,50 @@ async def adm_adult(m: types.Message, command: CommandObject):
     await m.answer(f"Доступ восстановлен: {who(u)}")
 
 
+@dp.message(Command("promoadd"), ADMIN)
+async def adm_promoadd(m: types.Message, command: CommandObject):
+    parts = (command.args or "").split()
+    usage = ("Использование: /promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ_АКТИВАЦИЙ\n"
+             "Пример: /promoadd WELCOME 20 0 100 (20 сообщений, без подписки, на 100 человек)")
+    if len(parts) != 4 or not re.fullmatch(r"[A-Za-z0-9_\-]{3,20}", parts[0]) \
+            or not all(p.isdigit() for p in parts[1:]):
+        await m.answer(usage)
+        return
+    code, msgs, days, uses = parts[0].upper(), int(parts[1]), int(parts[2]), int(parts[3])
+    if (msgs == 0 and days == 0) or uses == 0:
+        await m.answer("Нужна хоть какая-то награда и лимит больше нуля.\n" + usage)
+        return
+    if await fetch_one("SELECT code FROM promo_codes WHERE code=?", (code,)):
+        await m.answer("Такой промокод уже есть. Удали его: /promodel " + code)
+        return
+    await execute("INSERT INTO promo_codes (code, messages, sub_days, max_uses, created_at) VALUES (?,?,?,?,?)",
+                  (code, msgs, days, uses, now_utc().isoformat()))
+    await m.answer(f"Промокод создан: {code}\n+{msgs} сообщений, подписка {days} дн., лимит {uses}.\n"
+                   f"Пользователь вводит: /promo {code}")
+
+
+@dp.message(Command("promolist"), ADMIN)
+async def adm_promolist(m: types.Message):
+    rows = await fetch_all("SELECT * FROM promo_codes ORDER BY created_at DESC LIMIT 30")
+    if not rows:
+        await m.answer("Промокодов нет. Создать: /promoadd")
+        return
+    await m.answer("\n".join(
+        f"{r['code']}: +{r['messages']} сообщ., подписка {r['sub_days']} дн., использовано {r['used']}/{r['max_uses']}"
+        for r in rows))
+
+
+@dp.message(Command("promodel"), ADMIN)
+async def adm_promodel(m: types.Message, command: CommandObject):
+    code = (command.args or "").strip().upper()
+    if not code:
+        await m.answer("Использование: /promodel КОД")
+        return
+    cur = await execute("DELETE FROM promo_codes WHERE code=?", (code,))
+    await execute("DELETE FROM promo_uses WHERE code=?", (code,))
+    await m.answer("Промокод удалён." if cur.rowcount else "Такого промокода нет.")
+
+
 @dp.callback_query(F.data.startswith("adm:"), ADMIN)
 async def cb_admin(c: types.CallbackQuery):
     parts = c.data.split(":")
@@ -1902,14 +2266,21 @@ async def main():
         BotCommand(command="name", description="Сменить имя"),
         BotCommand(command="reset", description="Очистить историю"),
         BotCommand(command="ref", description="Пригласить друзей"),
+        BotCommand(command="promo", description="Ввести промокод"),
+        BotCommand(command="tz", description="Часовой пояс"),
         BotCommand(command="notify", description="Напоминания от Алисы вкл/выкл"),
+        BotCommand(command="privacy", description="Конфиденциальность"),
+        BotCommand(command="deleteme", description="Удалить мои данные"),
         BotCommand(command="paysupport", description="Поддержка по оплате"),
     ])
-    log.info("Бот @%s запущен. Голосовые: %s", BOT_USERNAME,
-             "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)")
+    log.info("Бот @%s запущен. Голосовые ответы: %s, распознавание голосовых: %s", BOT_USERNAME,
+             "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)",
+             "включено" if ELEVEN_API_KEY else "выключено (нет ELEVEN_API_KEY)")
 
+    spawn(expiry_loop())
     if NUDGES_ENABLED:
         spawn(nudge_loop())
+        spawn(morning_loop())
     if BACKUP_ENABLED:
         spawn(backup_loop())
 
