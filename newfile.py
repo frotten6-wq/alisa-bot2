@@ -1168,6 +1168,13 @@ def build_system(u: dict) -> str:
         parts.append(RP_RULES + "\nСюжет: " + u["rp_plot"])
     elif u.get("scenario") in SCENARIOS and mode_allowed(u, u["scenario"]):
         parts.append("Режим общения: " + SCENARIOS[u["scenario"]][1])
+    if u.get("scenario") != "spicy" and mode_allowed(u, "spicy"):
+        parts.append(
+            "Если собеседник просит пошлостей, откровенного разговора или «сиськи/нюдсы», не отвечай сухим отказом. "
+            "Кокетливо, в своём стиле, одной фразой подскажи, что для этого есть режим: кнопка "
+            f"«{BTN['modes'][L]}» внизу → «{tr(L, 'scen_spicy')}», и там ты смелее. "
+            "Подсказывай это не чаще одного раза за несколько сообщений; если уже подсказала недавно, просто "
+            "отшутись. Откровенные фото не обещай.")
     if u["memory_note"]:
         parts.append("Что ты помнишь о собеседнике: " + u["memory_note"])
     if VOICE_ENABLED:
