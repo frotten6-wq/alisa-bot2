@@ -582,6 +582,12 @@ TX = {
                    "de": "Schreib: Foto und eine Beschreibung, z. B. «Foto im roten Kleid auf dem Balkon»."},
     "photo_wont": {"ru": "Такое я генерировать не буду.", "en": "I won't generate that.",
                    "de": "So etwas erstelle ich nicht."},
+    "photo_nude": {"ru": "Без одежды не могу 🙈 Но могу в кружевном белье, купальнике или в одном полотенце. "
+                         "Например: «фото в кружевном белье на кровати» 😏",
+                   "en": "Nothing without clothes 🙈 But I can do lace lingerie, a bikini or just a towel. "
+                         "For example: «photo in lace lingerie on the bed» 😏",
+                   "de": "Ganz ohne Kleidung geht nicht 🙈 Aber in Spitzenwäsche, Bikini oder nur im Handtuch schon. "
+                         "Zum Beispiel: «Foto in Spitzenwäsche auf dem Bett» 😏"},
     "photo_only": {
         "ru": "Я присылаю только свои фото, где в кадре я одна 🙂 Без других людей, известных личностей, надписей "
               "и политической символики. Опиши, где я и во что одета, например «фото в кафе у окна».",
@@ -1551,10 +1557,22 @@ _PHOTO_KIDS_RE = re.compile(r"(малыш|девочк|мальчик|\bbab(?:y|
 _PHOTO_TEXT_RE = re.compile(r"(надпис|написан|написать|с\s+текстом|текст\s|логотип|\blogo\b|\btext\b|плакат|баннер|"
                             r"aufschrift|schriftzug|beschrift|\bbanner\b|\bwritten\b|\bsaying\b)", re.I)
 
+# Фото уровня «как в Instagram»: бельё, купальник, полотенце — можно; нагота и секс — нет.
+_PHOTO_NUDE_RE = re.compile(
+    r"(?<![а-яёa-z])(?:голая|голой|голую|голышом|обнаж|без\s+одежд|без\s+белья|без\s+трус|без\s+лифчик|"
+    r"без\s+бюстгальтер|без\s+верха|топлес|соск|сиськ|письк|вагин|киск|член|секс(?!уальн|и)|трах|порно|порн|минет|"
+    r"раздет|раздевается|раздень|сними\s+(?:трус|лифчик|бель|всё|все|одежд)|"
+    r"nude|naked|topless|nipple|boob|tits|pussy|vagina|penis|dick|sex(?!y|ual)|porn|fuck|blowjob|undress|"
+    r"without\s+(?:clothes|bra|panties|underwear)|nackt|oben\s+ohne|brustwarz|titten|muschi|ohne\s+"
+    r"(?:kleidung|bh|höschen|unterwäsche)|ausgezogen|porno|fick)", re.I)
+
+
 def photo_block_reason(p: str) -> str | None:
-    """Почему нельзя такое фото: 'extremism', 'people', 'text' или None."""
+    """Почему нельзя такое фото: 'extremism', 'nude', 'people', 'text' или None."""
     if _PHOTO_EXTREMISM_RE.search(p):
         return "extremism"
+    if _PHOTO_NUDE_RE.search(p):
+        return "nude"
     if _PHOTO_PEOPLE_RE.search(p) or _PHOTO_KIDS_RE.search(p):
         return "people"
     if _PHOTO_TEXT_RE.search(p):
@@ -1731,7 +1749,9 @@ def build_edit_prompt(prompt: str) -> str:
 
 
 PHOTO_SAFETY = ("Only one person in the frame: this adult woman. No other people, no children, "
-                "no text, no letters, no logos, no flags, no political or extremist symbols.")
+                "no text, no letters, no logos, no flags, no political or extremist symbols. "
+                "Sensual, tasteful boudoir or swimwear style is fine (lingerie, bikini, towel, bed sheets), "
+                "but no nudity: breasts, nipples and genitals stay fully covered; no sexual acts.")
 
 
 async def deliver_photo(chat_id: int, prompt: str) -> str:
@@ -2691,7 +2711,7 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         return
     reason = photo_block_reason(prompt)
     if reason:
-        await m.answer(tr(L, "photo_only"))
+        await m.answer(tr(L, "photo_nude" if reason == "nude" else "photo_only"))
         if reason == "extremism" and not is_admin(uid):
             await log_flag(uid, "photo_extremism", prompt)
         return
