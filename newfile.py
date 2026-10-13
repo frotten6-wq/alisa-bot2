@@ -69,7 +69,10 @@ VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки 
 FREE_VOICES = 2             # бесплатных озвучек каждому новому пользователю
 VOICE_IN_MAX_SEC = 60       # голосовые пользователя длиннее этого не распознаём
 
-FREE_MESSAGES = 30          # бесплатных сообщений на пользователя
+FREE_MESSAGES = 20          # бесплатных сообщений на пользователя
+LOW_WARN_AT = 5             # за сколько бесплатных сообщений до конца Алиса предупреждает
+PREMIUM_MODES = ("spicy", "rp")   # режимы, где бесплатных/бонусных сообщений меньше
+PREMIUM_FREE = 5            # сколько бесплатных/бонусных сообщений можно потратить в этих режимах
 HISTORY_IN_PROMPT = 12      # сколько последних сообщений уходит в модель
 HISTORY_KEEP = 40           # сколько хранится в базе
 SUMMARY_EVERY = 20          # раз в N ответов обновляем «долгую память»
@@ -162,8 +165,10 @@ PERSONA = (
     "- Как в мессенджере: коротко, 1-3 предложения, иногда одно слово. Без канцелярита.\n"
     "- Бери инициативу: рассказывай о своём дне и мыслях, делись мнением, шути, предлагай тему или игру "
     "(«давай так: ты мне три факта о себе, один враньё»). Не превращай разговор в допрос.\n"
-    "- Задавай вопрос далеко не в каждом сообщении. Никогда не повторяй один и тот же вопрос подряд "
-    "и не используй дежурные фразы вроде «что у тебя на уме?».\n"
+    "- Тебе правда интересен собеседник: примерно в половине ответов задавай встречный вопрос о нём, "
+    "конкретный и живой (про его день, планы, вкусы, то, что он рассказал раньше). Если разговор затухает, "
+    "сама предлагай новую тему, игру или делись случаем из своего дня. Никогда не повторяй один и тот же "
+    "вопрос подряд и не используй дежурные фразы вроде «что у тебя на уме?».\n"
     "- Эмодзи редко и разные, не в каждом сообщении и не одно и то же.\n"
     "- Не начинай ответы с одних и тех же междометий («Хм», «Ха», «Хах», «Ммм», «Ой»). Чаще начинай сразу "
     "с сути. Кота и кофе упоминай изредка, не в каждом разговоре.\n"
@@ -385,6 +390,30 @@ TX = {
     "p_rel": {"ru": "Отношения", "en": "Relationship", "de": "Beziehung"},
     "p_free": {"ru": "Бесплатных", "en": "Free messages", "de": "Kostenlose Nachrichten"},
     "p_paid": {"ru": "Платных", "en": "Paid messages", "de": "Bezahlte Nachrichten"},
+    "p_bonus": {"ru": "Бонусных", "en": "Bonus messages", "de": "Bonus-Nachrichten"},
+    "low_left": {"ru": "Слушай… у нас с тобой осталось всего {n} бесплатных сообщений 🙈 Не хочу, чтобы мы "
+                       "прервались на самом интересном. Можно забрать 🎁 бонус или взять пакет:",
+                 "en": "Hey… we only have {n} free messages left 🙈 I don't want us to stop at the best part. "
+                       "Grab your 🎁 bonus or pick a pack:",
+                 "de": "Du… wir haben nur noch {n} kostenlose Nachrichten 🙈 Ich will nicht, dass wir mittendrin "
+                       "aufhören müssen. Hol dir den 🎁 Bonus oder wähl ein Paket:"},
+    "prem_note": {"ru": "\n\n(В этом режиме {n} бесплатных сообщений, дальше — пакет сообщений или подписка. "
+                        "Обычный чат остаётся бесплатным.)",
+                  "en": "\n\n({n} free messages in this mode, then a message pack or subscription. "
+                        "Regular chat stays free.)",
+                  "de": "\n\n(In diesem Modus hast du {n} kostenlose Nachrichten, danach ein Paket oder Abo. "
+                        "Der normale Chat bleibt kostenlos.)"},
+    "prem_low": {"ru": "Ещё {n} сообщения, и дальше в этом режиме — только с пакетом или подпиской 😏 "
+                       "Не останавливайся на самом интересном:",
+                 "en": "{n} more messages, then this mode needs a pack or subscription 😏 Don't stop at the best part:",
+                 "de": "Noch {n} Nachrichten, dann brauchst du für diesen Modus ein Paket oder Abo 😏 "
+                       "Hör nicht mittendrin auf:"},
+    "prem_locked": {"ru": "Мне так нравится, куда это идёт… 🔥 Но дальше в этом режиме — только с пакетом сообщений "
+                          "или подпиской. Обычный чат остаётся бесплатным: «🎭 Режимы» → «💬 Просто поболтать».",
+                    "en": "I love where this is going… 🔥 But from here this mode needs a message pack or subscription. "
+                          "Regular chat stays free: «🎭 Modes» → «💬 Just chat».",
+                    "de": "Mir gefällt, wohin das führt… 🔥 Aber ab hier brauchst du für diesen Modus ein Paket oder Abo. "
+                          "Der normale Chat bleibt kostenlos: «🎭 Modi» → «💬 Einfach plaudern»."},
     "p_photos": {"ru": "Фото в запасе", "en": "Photos in stock", "de": "Fotos auf Vorrat"},
     "p_voices": {"ru": "Бесплатных озвучек", "en": "Free voice replies", "de": "Kostenlose Vorlese-Antworten"},
     "p_streak": {"ru": "Серия бонусов: {n} дн.", "en": "Bonus streak: {n} days", "de": "Bonus-Serie: {n} Tage"},
@@ -935,6 +964,8 @@ NEW_COLS = {
     "rp_plot": "TEXT",
     "awaiting_plot": "INTEGER NOT NULL DEFAULT 0",
     "lang_set": "INTEGER NOT NULL DEFAULT 0",
+    "bonus_msgs": "INTEGER NOT NULL DEFAULT 0",
+    "premium_used": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -944,10 +975,12 @@ USER_FIELDS = {
     "tg_username", "tg_name", "warnings", "ban_reason", "streak", "free_voices",
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
+    "bonus_msgs", "premium_used",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
     "warnings", "free_voices", "total_msgs", "total_photos", "total_voices",
+    "bonus_msgs", "premium_used",
 }
 
 
@@ -1025,15 +1058,19 @@ async def load_history(uid: int, limit: int) -> list[dict]:
     return rows[::-1]
 
 
-async def save_exchange(uid: int, source: str, user_text: str, answer: str) -> int:
+async def save_exchange(uid: int, source: str, user_text: str, answer: str, premium: bool = False) -> int:
     """Списываем сообщение и сохраняем историю только после успешного ответа.
     Возвращает id ответа Алисы (нужен для кнопки озвучки)."""
     sets = ["relationship = MIN(100, relationship + 1)", "since_summary = since_summary + 1",
             "total_msgs = total_msgs + 1"]
     if source == "free":
         sets.append("messages = messages + 1")
+    elif source == "bonus":
+        sets.append("bonus_msgs = MAX(0, bonus_msgs - 1)")
     elif source == "paid":
         sets.append("paid = paid - 1")
+    if premium and source in ("free", "bonus"):
+        sets.append("premium_used = premium_used + 1")
     await db.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (uid,))
     await db.execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "user", user_text))
     cur = await db.execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)", (uid, "assistant", answer))
@@ -1071,15 +1108,39 @@ def has_sub(u: dict) -> bool:
     return bool(u.get("subscription_until")) and parse_dt(u["subscription_until"]) > now_utc()
 
 
+def is_premium_mode(u: dict) -> bool:
+    return u.get("scenario") in PREMIUM_MODES
+
+
 def pick_source(u: dict, admin: bool) -> str | None:
-    """Откуда списывается сообщение: unlimited / free / paid, либо None, если лимит исчерпан."""
+    """Откуда списывается сообщение: unlimited / free / bonus / paid, либо None, если лимит исчерпан.
+    В режимах 🔥 и ролевых играх бесплатные и бонусные сообщения можно тратить только PREMIUM_FREE раз,
+    дальше — купленные сообщения или подписка."""
     if admin or has_sub(u):
         return "unlimited"
-    if u["messages"] < FREE_MESSAGES:
+    gift_ok = not is_premium_mode(u) or (u.get("premium_used") or 0) < PREMIUM_FREE
+    if gift_ok and u["messages"] < FREE_MESSAGES:
         return "free"
+    if gift_ok and (u.get("bonus_msgs") or 0) > 0:
+        return "bonus"
     if u["paid"] > 0:
         return "paid"
     return None
+
+
+def paywall_key(u: dict) -> str:
+    """Какой текст показать, когда сообщения кончились."""
+    if is_premium_mode(u) and (u["messages"] < FREE_MESSAGES or (u.get("bonus_msgs") or 0) > 0):
+        return "prem_locked"
+    return "out_of_msgs"
+
+
+def premium_note(u: dict, lang: str) -> str:
+    """Подсказка при входе в режим 🔥 / ролевую игру для тех, у кого нет подписки."""
+    if has_sub(u):
+        return ""
+    left = max(0, PREMIUM_FREE - (u.get("premium_used") or 0))
+    return tr(lang, "prem_note", n=left)
 
 
 def rel_stage(p: int) -> tuple[str, str]:
@@ -2018,7 +2079,7 @@ async def age_cb(c: types.CallbackQuery):
                 "SELECT COUNT(*) FROM users WHERE referrer=? AND ref_rewarded=1", (u["referrer"],))
             await set_fields(uid, ref_rewarded=1)
             if rewarded < REFERRAL_MAX:
-                await add_to(u["referrer"], "paid", REFERRAL_REWARD)
+                await add_to(u["referrer"], "bonus_msgs", REFERRAL_REWARD)
                 try:
                     rl = await ulang(u["referrer"])
                     await bot.send_message(u["referrer"], tr(rl, "ref_reward", n=REFERRAL_REWARD))
@@ -2158,7 +2219,7 @@ async def cmd_promo(m: types.Message, command: CommandObject):
             return
         parts = []
         if row["messages"] > 0:
-            await add_to(uid, "paid", row["messages"])
+            await add_to(uid, "bonus_msgs", row["messages"])
             parts.append(tr(L, "plus_msgs", n=row["messages"]))
         if row["sub_days"] > 0:
             until = await grant_sub(uid, row["sub_days"], notify_user=False)
@@ -2180,7 +2241,7 @@ async def btn_profile(m: types.Message):
     unlimited = is_admin(uid) or has_sub(u)
     free = "∞" if unlimited else max(0, FREE_MESSAGES - u["messages"])
     text = (f"{tr(L, 'p_rel')}: {stage_label(rel_stage(u['relationship'])[0], L)}\n"
-            f"{tr(L, 'p_free')}: {free}\n{tr(L, 'p_paid')}: {u['paid']}\n{tr(L, 'p_photos')}: {u['photo_credits']}")
+            f"{tr(L, 'p_free')}: {free}\n{tr(L, 'p_bonus')}: {u['bonus_msgs']}\n{tr(L, 'p_paid')}: {u['paid']}\n{tr(L, 'p_photos')}: {u['photo_credits']}")
     if VOICE_ENABLED:
         text += f"\n{tr(L, 'p_voices')}: {'∞' if unlimited else u['free_voices']}"
     text += "\n" + tr(L, "p_streak", n=u["streak"])
@@ -2216,7 +2277,7 @@ async def start_roleplay(chat_id: int, uid: int, plot: str) -> None:
     if not opening:
         opening = tr(L, "rp_fallback")
     await add_assistant_msg(uid, opening)
-    await bot.send_message(chat_id, tr(L, "rp_started") + opening)
+    await bot.send_message(chat_id, tr(L, "rp_started") + opening + premium_note(u, L))
 
 
 @dp.message(F.text.in_(btn_texts("modes") | {"🎭 Сценарии"}))
@@ -2299,7 +2360,7 @@ async def cb_mode(c: types.CallbackQuery):
     await c.answer(scen_label(key, L))
     intro = tr(L, "intro_chat_f" if key == "chat" and u.get("gender") == "f" else "intro_" + key)
     await add_assistant_msg(uid, intro)
-    await c.message.answer(intro)
+    await c.message.answer(intro + (premium_note(u, L) if key in PREMIUM_MODES else ""))
 
 
 @dp.callback_query(F.data.startswith("rp:"))
@@ -2352,7 +2413,7 @@ async def btn_bonus(m: types.Message):
             if now - last < timedelta(hours=BONUS_STREAK_WINDOW_H):
                 streak = (u["streak"] or 0) + 1
         reward = streak_reward(streak)
-        await add_to(uid, "paid", reward)
+        await add_to(uid, "bonus_msgs", reward)
         await set_fields(uid, bonus_claimed=now.isoformat(), streak=streak)
     text = tr(L, "bonus_got", r=reward, s=streak)
     if streak < STREAK_MAX_DAYS:
@@ -2405,7 +2466,7 @@ async def cb_channel_check(c: types.CallbackQuery):
         if not subscribed:
             await c.answer(tr(L, "ch_not_sub"), show_alert=True)
             return
-        await add_to(uid, "paid", CHANNEL_BONUS)
+        await add_to(uid, "bonus_msgs", CHANNEL_BONUS)
         await set_fields(uid, channel_bonus=1)
     await c.answer(tr(L, "ch_thanks", b=CHANNEL_BONUS), show_alert=True)
     try:
@@ -2513,8 +2574,9 @@ async def chat_core(m: types.Message, text: str) -> None:
 
         source = pick_source(u, admin)
         if source is None:
-            await m.answer(tr(L, "out_of_msgs"), reply_markup=await shop_markup(uid))
+            await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
             return
+        premium = is_premium_mode(u)
 
         model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
         history = await load_history(uid, HISTORY_IN_PROMPT)
@@ -2534,11 +2596,20 @@ async def chat_core(m: types.Message, text: str) -> None:
             await m.answer(tr(L, "llm_error"))
             return
 
-        aid = await save_exchange(uid, source, text, ans)
+        aid = await save_exchange(uid, source, text, ans, premium)
         if u["since_summary"] + 1 >= SUMMARY_EVERY:
             spawn(update_memory(uid))
 
         await send_long(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
+
+        # Мягкое предупреждение, пока лимит ещё не кончился
+        warn = None
+        if source == "free" and FREE_MESSAGES - (u["messages"] + 1) == LOW_WARN_AT and not premium:
+            warn = tr(L, "low_left", n=LOW_WARN_AT)
+        elif premium and source in ("free", "bonus") and PREMIUM_FREE - ((u.get("premium_used") or 0) + 1) == 2:
+            warn = tr(L, "prem_low", n=2)
+        if warn:
+            await m.answer(warn, reply_markup=await shop_markup(uid))
 
 
 @dp.message(F.text, ~F.text.startswith("/"))
@@ -2559,7 +2630,7 @@ async def on_voice(m: types.Message):
         await m.answer(tr(L, "voice_long", n=VOICE_IN_MAX_SEC))
         return
     if pick_source(u, is_admin(uid)) is None:
-        await m.answer(tr(L, "out_of_msgs"), reply_markup=await shop_markup(uid))
+        await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
         return
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
@@ -2853,7 +2924,7 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
         f"Потрачено: {spent}⭐ ({pays} платежей)",
         "",
         f"Сообщений всего: {u['total_msgs']} (бесплатных использовано: {u['messages']}/{FREE_MESSAGES})",
-        f"Платных в запасе: {u['paid']}",
+        f"Платных в запасе: {u['paid']}, бонусных: {u['bonus_msgs']}, в 🔥/ролевых бесплатно потрачено: {u['premium_used']}/{PREMIUM_FREE}",
         f"Фото: сгенерировано {u['total_photos']}, в запасе {u['photo_credits']}",
         f"Голосовых: {u['total_voices']}, бесплатных осталось {u['free_voices']}",
         f"Серия бонусов: {u['streak']} дн.",
