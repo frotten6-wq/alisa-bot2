@@ -1749,28 +1749,52 @@ def build_edit_prompt(prompt: str) -> str:
 
 
 PHOTO_SAFETY = ("Only one person in the frame: this adult woman. No other people, no children, "
-                "no text, no letters, no logos, no flags, no political or extremist symbols. "
-                "Sensual, tasteful boudoir or swimwear style is fine (lingerie, bikini, towel, bed sheets), "
-                "but no nudity: breasts, nipples and genitals stay fully covered; no sexual acts.")
+                "no text, no letters, no logos, no flags. Tasteful, classy fashion photography.")
+
+
+async def photo_prompt_en(prompt: str) -> str:
+    """Переводит запрос на английский в виде короткого описания модной фотосессии:
+    так генератор лучше понимает запрос и реже отказывает на безобидном (бельё, купальник, чулки)."""
+    try:
+        r = await llm.chat.completions.create(
+            model=CHAT_MODEL_FREE, temperature=0.3,
+            messages=[{"role": "system", "content":
+                       "Rewrite the user's photo request as a short English scene description for a tasteful "
+                       "fashion or lingerie-catalog photoshoot of one adult woman: outfit, place, pose, light. "
+                       "Neutral, non-explicit wording. Max 40 words. Output only the description."},
+                      {"role": "user", "content": prompt}])
+        out = (r.choices[0].message.content or "").strip().strip('"')
+        return out or prompt
+    except Exception:
+        log.exception("Не удалось переписать запрос на фото")
+        return prompt
+
+
+async def _render_photo(prompt: str) -> bytes:
+    ref = await get_reference()
+    if ref:
+        try:
+            return await edit_image(build_edit_prompt(prompt), ref)
+        except ImageRefused:
+            raise
+        except Exception as e:
+            log.exception("Ошибка генерации по референсу, откат на обычную генерацию")
+            await notify_admin(
+                f"Генерация по референсу не сработала, использую обычную: {type(e).__name__}: {e}", "edit")
+    return await gen_image(f"{APPEARANCE}, {prompt}, photorealistic. {PHOTO_SAFETY}")
 
 
 async def deliver_photo(chat_id: int, prompt: str) -> str:
     """Возвращает 'ok', 'refused' (отклонено модерацией) или 'error'."""
     try:
         async with ChatActionSender.upload_photo(bot=bot, chat_id=chat_id):
-            data = None
-            ref = await get_reference()
-            if ref:
-                try:
-                    data = await edit_image(build_edit_prompt(prompt), ref)
-                except ImageRefused:
-                    raise
-                except Exception as e:
-                    log.exception("Ошибка генерации по референсу, откат на обычную генерацию")
-                    await notify_admin(
-                        f"Генерация по референсу не сработала, использую обычную: {type(e).__name__}: {e}", "edit")
-            if data is None:
-                data = await gen_image(f"{APPEARANCE}, {prompt}, photorealistic. {PHOTO_SAFETY}")
+            scene = await photo_prompt_en(prompt)
+            try:
+                data = await _render_photo(scene)
+            except ImageRefused:
+                # Вторая попытка с более сдержанной формулировкой
+                log.info("Фото отклонено, пробую смягчённый вариант: %s", scene[:100])
+                data = await _render_photo(f"elegant magazine-style photoshoot, {scene}, modest and classy")
         await bot.send_photo(chat_id, BufferedInputFile(data, "photo.jpg"))
         await add_to(chat_id, "total_photos", 1)
         return "ok"
@@ -2155,6 +2179,8 @@ dp.callback_query.outer_middleware(guard)
 @dp.error()
 async def on_error(event: ErrorEvent):
     log.error("Необработанная ошибка: %s", event.exception, exc_info=event.exception)
+    if type(event.exception).__name__ in ("TelegramNetworkError", "TelegramRetryAfter", "TelegramServerError"):
+        return True  # разовые сбои связи с Telegram — не беспокоим админа
     await notify_admin(f"Необработанная ошибка: {type(event.exception).__name__}: {event.exception}", "unhandled")
     return True
 
