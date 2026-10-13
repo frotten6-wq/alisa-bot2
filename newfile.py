@@ -19,6 +19,11 @@ from aiogram.types import (
     KeyboardButton, LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup,
 )
 from aiogram.utils.chat_action import ChatActionSender
+
+try:  # реакции на сообщения есть в aiogram 3.3+
+    from aiogram.types import ReactionTypeEmoji
+except ImportError:  # pragma: no cover
+    ReactionTypeEmoji = None
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -89,6 +94,38 @@ NUDGE_AFTER_H = 24          # через сколько часов тишины 
 WARN_LIMIT = 3              # столько предупреждений, и доступ закрывается автоматически
 
 DEFAULT_TZ = 3              # часовой пояс по умолчанию (UTC+3), человек меняет командой /tz
+
+# ---- Админ-аналитика ----
+REPORT_ENABLED = env("REPORT_ENABLED", "1") == "1"   # вечерний отчёт админу
+REPORT_HOUR = int(env("REPORT_HOUR", "23"))          # во сколько по времени админа
+LLM_PRICE_IN = float(env("LLM_PRICE_IN", "2"))       # $ за 1 млн входящих токенов (примерно, сверь с тарифом xAI)
+LLM_PRICE_OUT = float(env("LLM_PRICE_OUT", "6"))     # $ за 1 млн исходящих токенов
+IMAGE_PRICE = float(env("IMAGE_PRICE", "0.05"))      # $ за одну картинку (примерно)
+ELEVEN_MONTHLY_CHARS = int(env("ELEVEN_MONTHLY_CHARS", "10000"))  # лимит символов озвучки в месяц по тарифу
+REACT_CHANCE = 0.25         # как часто Алиса ставит реакцию на сообщение
+AUTO_LANG_CODES = {"ru": "ru", "uk": "ru", "be": "ru", "kk": "ru", "en": "en", "de": "de"}
+
+try:
+    from zoneinfo import ZoneInfo
+    _ADMIN_ZONE = ZoneInfo(env("ADMIN_TZ", "Europe/Berlin"))
+except Exception:  # нет базы часовых поясов — берём фиксированное смещение
+    _ADMIN_ZONE = timezone(timedelta(hours=int(env("ADMIN_TZ_OFFSET", "2"))))
+
+
+def admin_now() -> datetime:
+    return datetime.now(_ADMIN_ZONE)
+
+
+def admin_day(d: datetime | None = None) -> str:
+    return (d or admin_now()).strftime("%Y-%m-%d")
+
+
+def admin_day_bounds(days_ago: int = 0) -> tuple[str, str, str]:
+    """Начало и конец суток по времени админа (в UTC, для сравнения с created_at) и ключ дня."""
+    start = admin_now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
+    end = start + timedelta(days=1)
+    return (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat(),
+            start.strftime("%Y-%m-%d"))
 NUDGE_HOURS = (9, 21)       # в какое местное время можно писать первой
 MORNING_HOURS = (8, 11)     # окно местного времени для «доброго утра» подписчикам
 FIRST_DISCOUNT_PCT = 30     # скидка на первую покупку, %
@@ -391,6 +428,10 @@ TX = {
     "p_free": {"ru": "Бесплатных", "en": "Free messages", "de": "Kostenlose Nachrichten"},
     "p_paid": {"ru": "Платных", "en": "Paid messages", "de": "Bezahlte Nachrichten"},
     "p_bonus": {"ru": "Бонусных", "en": "Bonus messages", "de": "Bonus-Nachrichten"},
+    "pm_lang": {"ru": "🌐 Язык", "en": "🌐 Language", "de": "🌐 Sprache"},
+    "lang_hint": {"ru": "\n\n🌐 Язык: русский. Сменить: /language",
+                  "en": "\n\n🌐 Language: English. Change: /language",
+                  "de": "\n\n🌐 Sprache: Deutsch. Ändern: /language"},
     "low_left": {"ru": "Слушай… у нас с тобой осталось всего {n} бесплатных сообщений 🙈 Не хочу, чтобы мы "
                        "прервались на самом интересном. Можно забрать 🎁 бонус или взять пакет:",
                  "en": "Hey… we only have {n} free messages left 🙈 I don't want us to stop at the best part. "
@@ -730,11 +771,11 @@ _MAIN_KB: dict[str, ReplyKeyboardMarkup] = {}
 def main_kb(lang: str) -> ReplyKeyboardMarkup:
     if lang not in _MAIN_KB:
         b = {k: v.get(lang) or v["ru"] for k, v in BTN.items()}
+        # «Чат» и «Канал» убраны из меню: писать можно сразу, канал — кнопкой в профиле и /channel
         _MAIN_KB[lang] = ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text=b["chat"]), KeyboardButton(text=b["profile"])],
-            [KeyboardButton(text=b["modes"]), KeyboardButton(text=b["shop"])],
-            [KeyboardButton(text=b["bonus"]), KeyboardButton(text=b["photo"])],
-            [KeyboardButton(text=b["friends"]), KeyboardButton(text=b["channel"])],
+            [KeyboardButton(text=b["modes"]), KeyboardButton(text=b["photo"])],
+            [KeyboardButton(text=b["bonus"]), KeyboardButton(text=b["shop"])],
+            [KeyboardButton(text=b["profile"]), KeyboardButton(text=b["friends"])],
         ], resize_keyboard=True)
     return _MAIN_KB[lang]
 
@@ -806,6 +847,24 @@ async def ulang(uid: int) -> str:
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 llm = AsyncOpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1", timeout=90, max_retries=1)
+_llm_create = llm.chat.completions.create
+
+
+async def _llm_create_tracked(*a, **kw):
+    """Тот же вызов модели, но с записью потраченных токенов для /costs и отчёта."""
+    r = await _llm_create(*a, **kw)
+    try:
+        us = getattr(r, "usage", None)
+        if us:
+            await track("tok_in", us.prompt_tokens or 0)
+            await track("tok_out", us.completion_tokens or 0)
+        await track("llm_calls", 1)
+    except Exception:
+        pass
+    return r
+
+
+llm.chat.completions.create = _llm_create_tracked
 
 db: aiosqlite.Connection | None = None
 BOT_USERNAME = ""
@@ -966,6 +1025,10 @@ NEW_COLS = {
     "lang_set": "INTEGER NOT NULL DEFAULT 0",
     "bonus_msgs": "INTEGER NOT NULL DEFAULT 0",
     "premium_used": "INTEGER NOT NULL DEFAULT 0",
+    "source": "TEXT",
+    "paywall_at": "TEXT",
+    "active_days": "INTEGER NOT NULL DEFAULT 0",
+    "last_active_day": "TEXT",
 }
 
 USER_FIELDS = {
@@ -975,12 +1038,12 @@ USER_FIELDS = {
     "tg_username", "tg_name", "warnings", "ban_reason", "streak", "free_voices",
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
-    "bonus_msgs", "premium_used",
+    "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
     "warnings", "free_voices", "total_msgs", "total_photos", "total_voices",
-    "bonus_msgs", "premium_used",
+    "bonus_msgs", "premium_used", "active_days",
 }
 
 
@@ -1027,10 +1090,35 @@ async def migrate() -> None:
         # Все, кто был до появления языков, общались по-русски
         await db.execute("ALTER TABLE users ADD COLUMN lang TEXT")
         await db.execute("UPDATE users SET lang='ru'")
+    await db.execute("CREATE TABLE IF NOT EXISTS usage (day TEXT NOT NULL, kind TEXT NOT NULL, "
+                     "amount REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, kind))")
     pcols = {r["name"] for r in await fetch_all("PRAGMA table_info(channel_posts)")}
     if "lang" not in pcols:
         await db.execute("ALTER TABLE channel_posts ADD COLUMN lang TEXT NOT NULL DEFAULT 'ru'")
     await db.commit()
+
+
+async def track(kind: str, amount: float = 1) -> None:
+    """Счётчики по дням (по времени админа): сообщения, токены, картинки, озвучка, упёршиеся в лимит."""
+    try:
+        await db.execute(
+            "INSERT INTO usage (day, kind, amount) VALUES (?,?,?) "
+            "ON CONFLICT(day, kind) DO UPDATE SET amount = amount + excluded.amount",
+            (admin_day(), kind, float(amount)))
+        await db.commit()
+    except Exception:
+        log.exception("Не удалось записать статистику %s", kind)
+
+
+async def usage_for(day: str) -> dict[str, float]:
+    rows = await fetch_all("SELECT kind, amount FROM usage WHERE day=?", (day,))
+    return {r["kind"]: r["amount"] for r in rows}
+
+
+def cost_usd(u: dict[str, float]) -> tuple[float, float]:
+    """(расходы на текст, на картинки) в долларах — оценка по ценам из настроек."""
+    llm_cost = u.get("tok_in", 0) / 1e6 * LLM_PRICE_IN + u.get("tok_out", 0) / 1e6 * LLM_PRICE_OUT
+    return llm_cost, u.get("images", 0) * IMAGE_PRICE
 
 
 async def get_user(uid: int) -> dict:
@@ -1275,6 +1363,65 @@ async def send_long(m: types.Message, text: str, reply_markup=None) -> None:
     chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)] or [text]
     for n, chunk in enumerate(chunks):
         await m.answer(chunk, reply_markup=reply_markup if n == len(chunks) - 1 else None)
+
+
+def split_reply(text: str) -> list[str]:
+    """Длинный ответ — на 2–3 сообщения, как пишут в мессенджере."""
+    text = text.strip()
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paras) >= 2:
+        if len(paras) > 3:
+            paras = paras[:2] + ["\n\n".join(paras[2:])]
+        if all(p.count("*") % 2 == 0 for p in paras):
+            return paras
+        return [text]
+    if len(text) < 380:
+        return [text]
+    sents = re.split(r"(?<=[.!?…])\s+", text)
+    if len(sents) < 3:
+        return [text]
+    half, acc = len(text) / 2, 0
+    for i, sn in enumerate(sents[:-1]):
+        acc += len(sn) + 1
+        if acc >= half:
+            a, b = " ".join(sents[:i + 1]), " ".join(sents[i + 1:])
+            if a.count("*") % 2 == 0 and b.count("*") % 2 == 0:
+                return [a, b]
+            break
+    return [text]
+
+
+async def send_human(m: types.Message, text: str, reply_markup=None) -> None:
+    """Отправляет ответ частями с короткой паузой «печатает…» между ними."""
+    parts = split_reply(text)
+    for i, part in enumerate(parts):
+        if i:
+            try:
+                await bot.send_chat_action(m.chat.id, "typing")
+            except Exception:
+                pass
+            await asyncio.sleep(min(0.8 + len(part) / 50, 3.0))
+        await send_long(m, part, reply_markup if i == len(parts) - 1 else None)
+
+
+async def maybe_react(m: types.Message, u: dict, text: str) -> None:
+    """Иногда Алиса ставит реакцию на сообщение, как живой человек."""
+    if ReactionTypeEmoji is None or random.random() > REACT_CHANCE:
+        return
+    t = (text or "").lower()
+    if re.search(r"ха+х|хах|лол|lol|haha|😂|🤣|\)\)", t):
+        e = "😁"
+    elif re.search(r"грус|плохо|устал|одинок|тяжело|sad|tired|lonely|traurig|müde|einsam", t):
+        e = "❤"
+    elif u.get("scenario") in ("spicy", "evening", "rp"):
+        e = random.choice(["🔥", "🥰", "❤"])
+    else:
+        e = random.choice(["❤", "👍", "🥰"])
+    try:
+        await bot.set_message_reaction(chat_id=m.chat.id, message_id=m.message_id,
+                                       reaction=[ReactionTypeEmoji(emoji=e)])
+    except Exception:
+        pass
 
 
 def spawn(coro) -> None:
@@ -1552,7 +1699,9 @@ async def gen_image(prompt: str) -> bytes:
         )
         log.info("image api (generations) status=%s", r.status_code)
         _check_image_response(r)
-        return await _extract_image(http, r)
+        data = await _extract_image(http, r)
+    await track("images", 1)
+    return data
 
 
 async def edit_image(prompt: str, reference: bytes) -> bytes:
@@ -1567,7 +1716,9 @@ async def edit_image(prompt: str, reference: bytes) -> bytes:
         )
         log.info("image api (edits) status=%s", r.status_code)
         _check_image_response(r)
-        return await _extract_image(http, r)
+        data = await _extract_image(http, r)
+    await track("images", 1)
+    return data
 
 
 def build_edit_prompt(prompt: str) -> str:
@@ -1688,6 +1839,7 @@ async def tts(text: str) -> bytes:
         )
     if r.status_code >= 400:
         raise RuntimeError(f"elevenlabs {r.status_code}: {r.text[:300]}")
+    await track("tts_chars", len(text))
     return r.content
 
 
@@ -1989,7 +2141,15 @@ async def on_error(event: ErrorEvent):
 
 # ============================ КОМАНДЫ И КНОПКИ ============================
 
-async def continue_start(chat_id: int, uid: int) -> None:
+async def apply_lang(uid: int, u: dict, new: str) -> None:
+    fields = {"lang": new, "lang_set": 1}
+    # Часовой пояс по умолчанию подстраиваем под язык, если человек сам его не менял
+    if u.get("tz_offset") in (None, LANG_DEFAULT_TZ.get(lang_of(u), DEFAULT_TZ)):
+        fields["tz_offset"] = LANG_DEFAULT_TZ[new]
+    await set_fields(uid, **fields)
+
+
+async def continue_start(chat_id: int, uid: int, auto_lang: bool = False) -> None:
     """Продолжение /start после выбора языка: возраст, знакомство или приветствие вернувшегося."""
     u = await get_user(uid)
     L = lang_of(u)
@@ -1998,7 +2158,8 @@ async def continue_start(chat_id: int, uid: int) -> None:
             await bot.send_message(chat_id, tr(L, "denied"))
             return
         if u["adult"] != 1:
-            await bot.send_message(chat_id, tr(L, "age_text"), reply_markup=age_kb(L))
+            text = tr(L, "age_text") + (tr(L, "lang_hint") if auto_lang else "")
+            await bot.send_message(chat_id, text, reply_markup=age_kb(L))
             return
     if u["name"] is None and not u["awaiting_name"]:
         await set_fields(uid, awaiting_name=1)
@@ -2022,10 +2183,21 @@ async def cmd_start(m: types.Message, command: CommandObject):
         ref = int(arg[4:])
         if ref != uid and await fetch_one("SELECT id FROM users WHERE id=?", (ref,)):
             await set_fields(uid, referrer=ref)
+    # Откуда пришёл человек: метка из ссылки t.me/бот?start=метка (запоминаем один раз, до подтверждения 18+)
+    if u["adult"] == 0 and not u.get("source"):
+        src = "ref" if arg.startswith("ref_") else re.sub(r"[^\w\-]", "", arg)[:32]
+        if src:
+            await set_fields(uid, source=src)
+    auto = False
     if not u.get("lang_set"):
-        await m.answer(tr("ru", "choose_lang"), reply_markup=lang_kb())
-        return
-    await continue_start(m.chat.id, uid)
+        code = (m.from_user.language_code or "").split("-")[0].lower()
+        if code not in AUTO_LANG_CODES:
+            await m.answer(tr("ru", "choose_lang"), reply_markup=lang_kb())
+            return
+        # Язык Telegram понятен — не задаём лишний вопрос, сменить можно через /language
+        await apply_lang(uid, u, AUTO_LANG_CODES[code])
+        auto = True
+    await continue_start(m.chat.id, uid, auto)
 
 
 @dp.message(Command("language", "lang"))
@@ -2042,11 +2214,7 @@ async def cb_lang(c: types.CallbackQuery):
         return
     u = await get_user(uid)
     first_time = not u.get("lang_set")
-    fields = {"lang": new, "lang_set": 1}
-    # Часовой пояс по умолчанию подстраиваем под язык, если человек сам его не менял
-    if u.get("tz_offset") in (None, LANG_DEFAULT_TZ.get(lang_of(u), DEFAULT_TZ)):
-        fields["tz_offset"] = LANG_DEFAULT_TZ[new]
-    await set_fields(uid, **fields)
+    await apply_lang(uid, u, new)
     try:
         await c.message.edit_text(tr(new, "lang_set"))
     except Exception:
@@ -2070,7 +2238,7 @@ async def age_cb(c: types.CallbackQuery):
         await set_fields(uid, adult=1, awaiting_name=0 if u["name"] else 1)
         if REG_ALERTS and not is_admin(uid):
             fresh = await get_user(uid)
-            text = f"🆕 Новый пользователь\n{who(fresh)} · язык: {L}"
+            text = f"🆕 Новый пользователь\n{who(fresh)} · язык: {L} · источник: {fresh.get('source') or 'без метки'}"
             if u["referrer"]:
                 text += f"\nПришёл от /u_{u['referrer']}"
             await tell_admin(text, uid)
@@ -2248,7 +2416,22 @@ async def btn_profile(m: types.Message):
     if has_sub(u):
         text += "\n" + tr(L, "p_sub", d=fmt_dt(parse_dt(u["subscription_until"])))
     text += f"\n{tr(L, 'p_lang')}: {LANG_NAMES[L]} (/language)"
-    await m.answer(text)
+    rows = [[InlineKeyboardButton(text=tr(L, "pm_lang"), callback_data="pm:lang")]]
+    if channel_for(L):
+        rows.insert(0, [InlineKeyboardButton(text=BTN["channel"][L], callback_data="pm:channel")])
+    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@dp.callback_query(F.data.startswith("pm:"))
+async def cb_profile_menu(c: types.CallbackQuery):
+    u = await get_user(c.from_user.id)
+    L = lang_of(u)
+    await c.answer()
+    if c.data == "pm:lang":
+        await c.message.answer(tr("ru", "choose_lang"), reply_markup=lang_kb())
+    elif c.data == "pm:channel":
+        text, kb = channel_payload(u)
+        await c.message.answer(text, reply_markup=kb)
 
 
 async def add_assistant_msg(uid: int, text: str) -> None:
@@ -2351,6 +2534,10 @@ async def cb_mode(c: types.CallbackQuery):
     if not mode_allowed(u, key):
         await c.answer(tr(L, "mode_unavailable"), show_alert=True)
         return
+    if u.get("scenario") == key:
+        # Повторное нажатие на уже включённый режим: не дублируем приветствие
+        await c.answer(scen_label(key, L))
+        return
     await set_fields(uid, scenario=key, rp_plot=None, awaiting_plot=0)
     u = await get_user(uid)
     try:
@@ -2431,17 +2618,21 @@ async def btn_photo(m: types.Message):
 @dp.message(Command("channel"))
 async def btn_channel(m: types.Message):
     u = await get_user(m.from_user.id)
+    text, kb = channel_payload(u)
+    await m.answer(text, reply_markup=kb)
+
+
+def channel_payload(u: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     L = lang_of(u)
     ch = channel_for(L)
     if not ch:
-        await m.answer(tr(L, "no_channel"))
-        return
+        return tr(L, "no_channel"), None
     rows = [[InlineKeyboardButton(text=tr(L, "open_channel"), url=channel_link(L))]]
     text = tr(L, "channel_text", ch=ch)
     if not u["channel_bonus"]:
         rows.append([InlineKeyboardButton(text=tr(L, "channel_bonus_btn", b=CHANNEL_BONUS), callback_data="ch:check")])
         text += tr(L, "channel_bonus_hint", b=CHANNEL_BONUS)
-    await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.callback_query(F.data == "ch:check")
@@ -2521,6 +2712,18 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         await m.answer(tr(L, "gen_photo_q"), reply_markup=kb)
 
 
+async def on_paywall(u: dict) -> None:
+    """Человек впервые упёрся в лимит — это самый «горячий» момент, сообщаем админу."""
+    await track("paywall", 1)
+    if u.get("paywall_at") or is_admin(u["id"]):
+        return
+    await set_fields(u["id"], paywall_at=now_utc().isoformat())
+    mode = u.get("scenario") or "chat"
+    await tell_admin(
+        f"💸 Упёрся в лимит\n{who(u)}\nРежим: {mode} · сообщений всего: {u['total_msgs']} · "
+        f"источник: {u.get('source') or 'без метки'}", u["id"])
+
+
 async def chat_core(m: types.Message, text: str) -> None:
     """Обработка текста от пользователя (набранного или распознанного из голосового)."""
     uid = m.from_user.id
@@ -2575,8 +2778,10 @@ async def chat_core(m: types.Message, text: str) -> None:
         source = pick_source(u, admin)
         if source is None:
             await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
+            await on_paywall(u)
             return
         premium = is_premium_mode(u)
+        spawn(maybe_react(m, u, text))
 
         model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
         history = await load_history(uid, HISTORY_IN_PROMPT)
@@ -2584,10 +2789,16 @@ async def chat_core(m: types.Message, text: str) -> None:
         messages = ([{"role": "system", "content": build_system(u)}] + history
                     + ([{"role": "system", "content": hint}] if hint else [])
                     + [{"role": "user", "content": text}])
+        t0 = time.monotonic()
         try:
             async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
                 r = await llm.chat.completions.create(model=model, messages=messages, temperature=0.87)
-            ans = (r.choices[0].message.content or "").strip()
+                ans = (r.choices[0].message.content or "").strip()
+                if ans:
+                    # «Печатает…» примерно столько, сколько печатал бы человек
+                    wait = min(0.6 + len(split_reply(ans)[0]) / 40, 3.5) - (time.monotonic() - t0)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
             if not ans:
                 raise ValueError("пустой ответ модели")
         except Exception as e:
@@ -2597,10 +2808,15 @@ async def chat_core(m: types.Message, text: str) -> None:
             return
 
         aid = await save_exchange(uid, source, text, ans, premium)
+        await track("msgs", 1)
+        today = admin_day()
+        if u.get("last_active_day") != today:
+            await execute("UPDATE users SET active_days = active_days + 1, last_active_day=? WHERE id=?",
+                          (today, uid))
         if u["since_summary"] + 1 >= SUMMARY_EVERY:
             spawn(update_memory(uid))
 
-        await send_long(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
+        await send_human(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
 
         # Мягкое предупреждение, пока лимит ещё не кончился
         warn = None
@@ -2631,11 +2847,13 @@ async def on_voice(m: types.Message):
         return
     if pick_source(u, is_admin(uid)) is None:
         await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
+        await on_paywall(u)
         return
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
             buf = await bot.download(m.voice)
             text = await stt(buf.read())
+            await track("stt_sec", m.voice.duration or 0)
     except Exception as e:
         log.exception("Ошибка распознавания голосового")
         await notify_admin(f"Ошибка распознавания голосового: {type(e).__name__}: {e}", "stt")
@@ -2760,6 +2978,13 @@ async def on_payment(m: types.Message):
         return
     payload = pay.invoice_payload
     L = await ulang(uid)
+    await track("stars", pay.total_amount)
+    try:
+        pu = await get_user(uid)
+        await tell_admin(f"💰 Оплата {pay.total_amount}⭐ · {payload}\n{who(pu)}\n"
+                         f"Источник: {pu.get('source') or 'без метки'}", uid)
+    except Exception:
+        log.exception("Не удалось уведомить об оплате")
 
     async with user_lock(uid):
         if payload.startswith("photo:"):
@@ -2831,7 +3056,12 @@ ADMIN_HELP = (
     "/promolist · /promodel КОД — список и удаление промокодов\n"
     "/post [en|de] [тема] — черновик поста в канал с фото (публикуется только по кнопке)\n"
     "/chanhello [en|de] — опубликовать и закрепить приветственный пост в канале\n"
-    "/update [текст] — разослать всем новое меню и сообщение об обновлении"
+    "/update [текст] — разослать всем новое меню и сообщение об обновлении\n\n"
+    "Аналитика:\n"
+    "/funnel [дней] — воронка: где отваливаются люди\n"
+    "/sources [дней] — откуда приходят (метки ссылок t.me/бот?start=метка)\n"
+    "/report — отчёт за сегодня (вечером приходит сам)\n"
+    "/costs [дней] — примерные расходы на xAI и озвучку"
 )
 
 
@@ -2951,7 +3181,9 @@ async def send_card(m: types.Message, uid: int) -> None:
 
 async def history_text(uid: int) -> str:
     hist = await load_history(uid, 12)
-    return "\n".join(f"{'👤' if h['role'] == 'user' else '🤖'} {h['content'][:150]}" for h in hist) or "История пуста"
+    def cut(t: str) -> str:
+        return t if len(t) <= 300 else t[:300] + "…"
+    return "\n".join(f"{'👤' if h['role'] == 'user' else '🤖'} {cut(h['content'])}" for h in hist) or "История пуста"
 
 
 async def payments_text(uid: int) -> str:
@@ -3053,6 +3285,167 @@ async def adm_delref(m: types.Message):
     await clear_reference()
     await m.answer("Эталон удалён. Фото снова генерируются только по текстовому описанию внешности, "
                    "приветственное фото отправляться не будет.")
+
+
+def _real_users(alias: str = "") -> str:
+    """Условие SQL: без админа и служебных аккаунтов Telegram."""
+    a = alias + "." if alias else ""
+    ids = ",".join(str(i) for i in SERVICE_ACCOUNTS | {ADMIN_ID})
+    return f"{a}id NOT IN ({ids})"
+
+
+def _days_arg(args: str | None) -> int:
+    a = (args or "").strip()
+    return int(a) if a.isdigit() else 0
+
+
+def _pct(a: int, b: int) -> str:
+    return f"{round(100 * a / b)}%" if b else "—"
+
+
+@dp.message(Command("funnel"), ADMIN)
+async def adm_funnel(m: types.Message, command: CommandObject):
+    days = _days_arg(command.args)
+    cond, params = _real_users(), ()
+    if days:
+        cond += " AND created_at > ?"
+        params = ((now_utc() - timedelta(days=days)).isoformat(),)
+    row = await fetch_one(
+        "SELECT COUNT(*) AS start, SUM(lang_set=1) AS lang, SUM(adult=1) AS adult, "
+        "SUM(total_msgs>=1) AS m1, SUM(total_msgs>=5) AS m5, SUM(total_msgs>=10) AS m10, "
+        "SUM(total_msgs>=30) AS m30, SUM(active_days>=2) AS ret, SUM(paywall_at IS NOT NULL) AS wall, "
+        "SUM(EXISTS(SELECT 1 FROM payments p WHERE p.user_id=users.id AND p.refunded=0)) AS paid "
+        f"FROM users WHERE {cond}", params)
+    r = {k: (row[k] or 0) for k in row}
+    steps = [("Нажали /start", "start"), ("Подтвердили 18+", "adult"),
+             ("Написали 1+ сообщение", "m1"), ("5+ сообщений", "m5"), ("10+ сообщений", "m10"),
+             ("30+ сообщений", "m30"), ("Вернулись в другой день", "ret"), ("Упёрлись в лимит", "wall"),
+             ("Заплатили", "paid")]
+    lines, prev = [], r["start"]
+    for title, k in steps:
+        lines.append(f"{title}: {r[k]} ({_pct(r[k], r['start'])} от всех, {_pct(r[k], prev)} от прошлого шага)")
+        if k not in ("ret", "wall"):
+            prev = r[k]
+    head = f"🔻 Воронка за {days} дн." if days else "🔻 Воронка за всё время"
+    await m.answer(head + "\n\n" + "\n".join(lines) +
+                   "\n\n«Вернулись» считается с этого обновления, у старых пользователей будет занижено.")
+
+
+@dp.message(Command("sources"), ADMIN)
+async def adm_sources(m: types.Message, command: CommandObject):
+    days = _days_arg(command.args)
+    cond, params = _real_users(), ()
+    if days:
+        cond += " AND created_at > ?"
+        params = ((now_utc() - timedelta(days=days)).isoformat(),)
+    rows = await fetch_all(
+        "SELECT COALESCE(NULLIF(source, ''), 'без метки') AS src, COUNT(*) AS n, SUM(adult=1) AS adult, "
+        "SUM(total_msgs>0) AS talk, SUM(total_msgs>=10) AS deep, SUM(active_days>=2) AS ret, "
+        "SUM(EXISTS(SELECT 1 FROM payments p WHERE p.user_id=users.id AND p.refunded=0)) AS payers, "
+        "COALESCE(SUM((SELECT SUM(stars) FROM payments p WHERE p.user_id=users.id AND p.refunded=0)), 0) AS stars "
+        f"FROM users WHERE {cond} GROUP BY src ORDER BY n DESC", params)
+    if not rows:
+        await m.answer("Пока пусто.")
+        return
+    lines = [f"<b>{r['src']}</b>: пришли {r['n']} → 18+ {r['adult'] or 0} → писали {r['talk'] or 0} → "
+             f"10+ сообщ. {r['deep'] or 0} → вернулись {r['ret'] or 0} → платили {r['payers'] or 0} "
+             f"({int(r['stars'] or 0)}⭐)" for r in rows]
+    link = f"https://t.me/{BOT_USERNAME}?start="
+    await m.answer(
+        ("📍 Источники" + (f" за {days} дн." if days else "")) + "\n\n" + "\n".join(lines) +
+        f"\n\nСсылки с метками (латиница, цифры, _ и -):\n{link}tt_ru — TikTok RU\n{link}tt_de — TikTok DE\n"
+        f"{link}reklama1 — реклама в канале\nКнопка в постах канала уже помечена как kanal_ru / kanal_de.",
+        parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def report_text(days_ago: int = 0) -> str:
+    start, end, day = admin_day_bounds(days_ago)
+    ru = _real_users()
+    new = await fetch_all(
+        "SELECT COALESCE(NULLIF(source, ''), 'без метки') AS src, COUNT(*) AS n FROM users "
+        f"WHERE {ru} AND created_at >= ? AND created_at < ? GROUP BY src ORDER BY n DESC", (start, end))
+    new_total = sum(r["n"] for r in new)
+    adult = await scalar(f"SELECT COUNT(*) FROM users WHERE {ru} AND adult=1 AND created_at >= ? AND created_at < ?",
+                         (start, end))
+    talk = await scalar(f"SELECT COUNT(*) FROM users WHERE {ru} AND total_msgs>0 AND created_at >= ? AND created_at < ?",
+                        (start, end))
+    active = await scalar(f"SELECT COUNT(*) FROM users WHERE {ru} AND last_active_day=?", (day,))
+    returning = await scalar(
+        f"SELECT COUNT(*) FROM users WHERE {ru} AND last_active_day=? AND created_at < ?", (day, start))
+    modes = await fetch_all(
+        f"SELECT COALESCE(scenario, 'chat') AS sc, COUNT(*) AS n FROM users WHERE {ru} AND last_active_day=? "
+        "GROUP BY sc ORDER BY n DESC", (day,))
+    pays = await fetch_one(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(stars), 0) AS s FROM payments "
+        "WHERE refunded=0 AND created_at >= ? AND created_at < ?", (start, end))
+    us = await usage_for(day)
+    llm_cost, img_cost = cost_usd(us)
+    src_line = ", ".join(f"{r['src']} {r['n']}" for r in new) or "—"
+    mode_line = ", ".join(f"{scen_label(r['sc'], 'ru') if r['sc'] in SCENARIOS else r['sc']} {r['n']}"
+                          for r in modes) or "—"
+    return (
+        f"📊 Отчёт за {day}\n\n"
+        f"Новых: {new_total} ({src_line})\n"
+        f"Из них подтвердили 18+: {adult or 0}, начали писать: {talk or 0}\n"
+        f"Общались сегодня: {active or 0} (из них вернувшихся: {returning or 0})\n"
+        f"Сообщений Алисе: {int(us.get('msgs', 0))}\n"
+        f"Режимы у общавшихся: {mode_line}\n"
+        f"Упирались в лимит: {int(us.get('paywall', 0))} раз\n"
+        f"Оплат: {pays['n']} на {int(pays['s'])}⭐\n\n"
+        f"Расходы (примерно): ${llm_cost + img_cost:.2f} — текст ${llm_cost:.2f}, "
+        f"фото {int(us.get('images', 0))} шт. ${img_cost:.2f}\n"
+        f"Озвучка: {int(us.get('tts_chars', 0))} симв., распознавание: {int(us.get('stt_sec', 0))} сек."
+    )
+
+
+@dp.message(Command("report"), ADMIN)
+async def adm_report(m: types.Message, command: CommandObject):
+    await m.answer(await report_text(_days_arg(command.args)))
+
+
+@dp.message(Command("costs"), ADMIN)
+async def adm_costs(m: types.Message, command: CommandObject):
+    days = _days_arg(command.args) or 7
+    lines, total = [], 0.0
+    for i in range(days - 1, -1, -1):
+        _, _, day = admin_day_bounds(i)
+        us = await usage_for(day)
+        if not us:
+            continue
+        a, b = cost_usd(us)
+        total += a + b
+        lines.append(f"{day}: ${a + b:.2f} · сообщ. {int(us.get('msgs', 0))} · токены "
+                     f"{int(us.get('tok_in', 0) / 1000)}k/{int(us.get('tok_out', 0) / 1000)}k · "
+                     f"фото {int(us.get('images', 0))} · озвучка {int(us.get('tts_chars', 0))} симв.")
+    month = admin_now().strftime("%Y-%m")
+    tts_month = await scalar("SELECT COALESCE(SUM(amount), 0) FROM usage WHERE kind='tts_chars' AND day LIKE ?",
+                             (month + "%",))
+    await m.answer(
+        f"💵 Расходы за {days} дн. (оценка): ${total:.2f}\n\n" + ("\n".join(lines) or "Данных пока нет") +
+        f"\n\nОзвучка за месяц: {int(tts_month or 0)} из {ELEVEN_MONTHLY_CHARS} символов тарифа ElevenLabs.\n"
+        f"Цены для оценки: ${LLM_PRICE_IN}/${LLM_PRICE_OUT} за 1 млн токенов, ${IMAGE_PRICE} за фото "
+        "(меняются переменными LLM_PRICE_IN, LLM_PRICE_OUT, IMAGE_PRICE). Точные суммы — в кабинете xAI.")
+
+
+async def report_loop() -> None:
+    """Каждый вечер в REPORT_HOUR по времени админа присылает отчёт за день."""
+    while True:
+        try:
+            await asyncio.sleep(600)
+            now = admin_now()
+            if now.hour < REPORT_HOUR:
+                continue
+            day = admin_day(now)
+            async with db.execute("SELECT value FROM kv WHERE key='report_day'") as cur:
+                row = await cur.fetchone()
+            if row and row[0] == day:
+                continue
+            await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('report_day', ?)", (day,))
+            await bot.send_message(ADMIN_ID, await report_text(0))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Ошибка вечернего отчёта")
 
 
 @dp.message(Command("stats"), ADMIN)
@@ -3439,7 +3832,7 @@ def post_kb(pid: int) -> InlineKeyboardMarkup:
 
 def bot_button(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=tr(lang, "write_alice"), url=f"https://t.me/{BOT_USERNAME}")]])
+        InlineKeyboardButton(text=tr(lang, "write_alice"), url=f"https://t.me/{BOT_USERNAME}?start=kanal_{lang}")]])
 
 
 def split_lang_arg(args: str | None) -> tuple[str, str]:
@@ -3632,6 +4025,8 @@ async def main():
              "включено" if ELEVEN_API_KEY else "выключено (нет ELEVEN_API_KEY)")
 
     spawn(expiry_loop())
+    if REPORT_ENABLED and ADMIN_ID:
+        spawn(report_loop())
     if AUTOPOST_ENABLED and CHANNEL:
         spawn(autopost_loop())
     if NUDGES_ENABLED:
