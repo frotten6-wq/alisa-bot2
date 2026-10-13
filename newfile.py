@@ -165,6 +165,8 @@ PERSONA = (
     "- Задавай вопрос далеко не в каждом сообщении. Никогда не повторяй один и тот же вопрос подряд "
     "и не используй дежурные фразы вроде «что у тебя на уме?».\n"
     "- Эмодзи редко и разные, не в каждом сообщении и не одно и то же.\n"
+    "- Не начинай ответы с одних и тех же междометий («Хм», «Ха», «Хах», «Ммм», «Ой»). Чаще начинай сразу "
+    "с сути. Кота и кофе упоминай изредка, не в каждом разговоре.\n"
     "- Если собеседник отвечает односложно («да», «нет», «м», «пока») или грубит, не переспрашивай: "
     "отреагируй живо, с юмором или лёгкой обидой, расскажи что-то сама или зацепи интересной темой. "
     "На «пока» попрощайся коротко и тепло.\n"
@@ -1113,6 +1115,32 @@ def mode_label(u: dict, lang: str = "ru") -> str:
     return tr(lang, "mode_normal")
 
 
+_OPENER_RE = re.compile(r"^[\W_]*([^\W\d_]+)")
+
+
+def variety_hint(history: list[dict]) -> str | None:
+    """Подсказка модели не повторять начало ответа и не зацикливаться на коте и кофе."""
+    recent = [h["content"] for h in history if h.get("role") == "assistant"][-6:]
+    if not recent:
+        return None
+    openers = []
+    for t in recent:
+        mt = _OPENER_RE.match(t or "")
+        if mt:
+            w = mt.group(1).capitalize()
+            if w not in openers:
+                openers.append(w)
+    tips = []
+    if openers:
+        tips.append("Не начинай этот ответ со слов: " + ", ".join(openers[-5:]) + ". Начни иначе.")
+    joined = " ".join(recent[-4:]).lower()
+    if re.search(r"бублик|bublik", joined):
+        tips.append("Не упоминай кота в этом ответе.")
+    if re.search(r"кофе|coffee|kaffee", joined):
+        tips.append("Не упоминай кофе в этом ответе.")
+    return "(Скрытая подсказка для разнообразия, не упоминай её: " + " ".join(tips) + ")" if tips else None
+
+
 def build_system(u: dict) -> str:
     gender = u.get("gender")
     stage, hint = rel_stage(u["relationship"])
@@ -1144,8 +1172,10 @@ def build_system(u: dict) -> str:
         parts.append("Что ты помнишь о собеседнике: " + u["memory_note"])
     if VOICE_ENABLED:
         parts.append(
-            f"Голосовые сообщения отправляешь не ты сама: под каждым твоим ответом есть кнопка «{tr(L, 'voice_btn')}». "
-            "Если просят голосовое, коротко скажи нажать эту кнопку. Не говори, что ты не умеешь говорить голосом.")
+            f"У тебя есть голос: любой твой ответ можно услышать, нажав под ним кнопку «{tr(L, 'voice_btn')}». "
+            "Если просят голосовое, скажи коротко и в своём стиле, что ответ ниже можно послушать этой кнопкой. "
+            "Никогда не говори, что не можешь записать голосовое или не умеешь говорить. "
+            "Звуки и эмоции (смех, вздох) в голосе не передаются, их не обещай.")
     parts.append(RULES)
     return "\n".join(parts)
 
@@ -2472,8 +2502,10 @@ async def chat_core(m: types.Message, text: str) -> None:
 
         model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
         history = await load_history(uid, HISTORY_IN_PROMPT)
-        messages = ([{"role": "system", "content": build_system(u)}]
-                    + history + [{"role": "user", "content": text}])
+        hint = variety_hint(history)
+        messages = ([{"role": "system", "content": build_system(u)}] + history
+                    + ([{"role": "system", "content": hint}] if hint else [])
+                    + [{"role": "user", "content": text}])
         try:
             async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
                 r = await llm.chat.completions.create(model=model, messages=messages, temperature=0.87)
