@@ -138,7 +138,10 @@ CHANNEL = env("CHANNEL", "@alisa_chat_channel")
 CHANNELS = {"ru": CHANNEL, "en": env("CHANNEL_EN", ""), "de": env("CHANNEL_DE", "")}
 CHANNEL_BONUS = 10          # сообщений за подписку на канал (один раз)
 AUTOPOST_ENABLED = env("AUTOPOST_ENABLED", "0") == "1"   # раз в день присылать админу черновик поста
-AUTOPOST_HOUR = 12          # во сколько (по UTC+DEFAULT_TZ) готовить ежедневный черновик
+AUTOPOST_HOUR = 12          # во сколько (по UTC+DEFAULT_TZ) готовить ежедневный черновик для RU-канала
+# Отдельное время для каждого канала (часы по UTC+DEFAULT_TZ, то есть по Москве), чтобы посты не выходили одновременно.
+# EN в 21:00 МСК = 20:00 в Европе, 14:00 на восточном побережье США.
+AUTOPOST_HOURS = {"ru": AUTOPOST_HOUR, "en": int(env("AUTOPOST_HOUR_EN", "21")), "de": int(env("AUTOPOST_HOUR_DE", "19"))}
 
 # Цены и наборы можно свободно менять
 PRODUCTS = {
@@ -4164,6 +4167,9 @@ POST_TASK = (
 async def make_post_draft(topic: str, lang: str = "ru") -> tuple[str, bytes]:
     task = POST_TASK + (f"\nТема поста: {topic}" if topic else "\nТему выбери сама: что-то из повседневной жизни.")
     task += f"\nТекст поста пиши {LANG_FOR_MODEL[lang]}. Метки ТЕКСТ: и ФОТО: оставь как есть."
+    if lang != "ru":
+        task += ("\nПиши как носительница языка, живым разговорным языком, а не переводом с русского. "
+                 "Не упоминай Россию, рубли и русские реалии, если тема этого не требует.")
     r = await llm.chat.completions.create(
         model=CHAT_MODEL, temperature=0.95,
         messages=[{"role": "system", "content": PERSONA + " " + RULES}, {"role": "user", "content": task}])
@@ -4318,21 +4324,29 @@ async def adm_chanhello(m: types.Message, command: CommandObject):
                        "или дай боту право «Изменение сообщений».")
 
 
+def autopost_langs() -> list[str]:
+    """Языки, для которых есть свой канал: ru всегда (основной), en/de только если задан CHANNEL_EN / CHANNEL_DE."""
+    return [L for L in LANGS if L == "ru" or CHANNELS.get(L)]
+
+
 async def autopost_loop() -> None:
-    """Раз в день готовит черновик поста и присылает админу на одобрение."""
+    """Раз в день для каждого канала готовит СВОЙ черновик в СВОЁ время и присылает админу на одобрение.
+    Посты разные (отдельная генерация на нужном языке) и публикуются только в свой канал."""
     while True:
         try:
             await asyncio.sleep(1800)
             local = local_now(DEFAULT_TZ)
-            if local.hour != AUTOPOST_HOUR:
-                continue
             day = local.strftime("%Y-%m-%d")
-            async with db.execute("SELECT value FROM kv WHERE key='autopost_day'") as cur:
-                row = await cur.fetchone()
-            if row and row[0] == day:
-                continue
-            await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('autopost_day', ?)", (day,))
-            await send_post_draft("", "ru")
+            for L in autopost_langs():
+                if local.hour != AUTOPOST_HOURS.get(L, AUTOPOST_HOUR):
+                    continue
+                key = "autopost_day" if L == "ru" else f"autopost_day_{L}"
+                async with db.execute("SELECT value FROM kv WHERE key=?", (key,)) as cur:
+                    row = await cur.fetchone()
+                if row and row[0] == day:
+                    continue
+                await execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", (key, day))
+                await send_post_draft("", L)
         except asyncio.CancelledError:
             raise
         except Exception:
