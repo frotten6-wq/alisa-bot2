@@ -2,6 +2,7 @@
 + модерация, предупреждения/баны и панель владельца."""
 import asyncio
 import base64
+import json
 import logging
 import os
 import random
@@ -146,6 +147,7 @@ PRODUCTS = {
     "sub_day":   {"title": "Подписка: 1 день",  "price": 70,   "days": 1},
     "sub_week":  {"title": "Подписка: 7 дней",  "price": 350,  "days": 7},
     "sub_month": {"title": "Подписка: 30 дней", "price": 1100, "days": 30},
+    "custom_unlock": {"title": "⚙️ Все настройки Алисы навсегда", "price": 150, "unlock": True},
 }
 
 # Режимы общения: ключ -> (название кнопки по-русски, инструкция для Алисы, доступен ли девушкам)
@@ -434,6 +436,40 @@ TX = {
     "p_paid": {"ru": "Платных", "en": "Paid messages", "de": "Bezahlte Nachrichten"},
     "p_bonus": {"ru": "Бонусных", "en": "Bonus messages", "de": "Bonus-Nachrichten"},
     "pm_lang": {"ru": "🌐 Язык", "en": "🌐 Language", "de": "🌐 Sprache"},
+    "prod_custom_unlock": {"ru": "⚙️ Все настройки Алисы навсегда", "en": "⚙️ All Alice settings forever",
+                           "de": "⚙️ Alle Alice-Einstellungen für immer"},
+    "cu_btn": {"ru": "⚙️ Настрой Алису под себя", "en": "⚙️ Customize Alice", "de": "⚙️ Alice anpassen"},
+    "cu_title": {"ru": "⚙️ Настрой меня под себя. Выбери, что поменять 👇",
+                 "en": "⚙️ Make me yours. Pick what to change 👇",
+                 "de": "⚙️ Pass mich an dich an. Wähl, was du ändern willst 👇"},
+    "cu_default": {"ru": "как обычно", "en": "default", "de": "Standard"},
+    "cu_lock_hint": {"ru": "🔒 — открывается подпиской или пакетом «Все настройки».",
+                     "en": "🔒 — unlocked with a subscription or the «All settings» pack.",
+                     "de": "🔒 — freigeschaltet mit Abo oder dem Paket «Alle Einstellungen»."},
+    "cu_reset_btn": {"ru": "🔄 Сбросить", "en": "🔄 Reset", "de": "🔄 Zurücksetzen"},
+    "cu_reset_done": {"ru": "Всё как раньше 🙂", "en": "Back to default 🙂", "de": "Alles wie vorher 🙂"},
+    "cu_saved": {"ru": "Готово ✅ Напиши мне — заметишь разницу 😉", "en": "Done ✅ Text me and you'll notice 😉",
+                 "de": "Fertig ✅ Schreib mir, du merkst den Unterschied 😉"},
+    "cu_locked_alert": {"ru": "🔒 Этот вариант открывается подпиской или пакетом «Все настройки»",
+                        "en": "🔒 This option comes with a subscription or the «All settings» pack",
+                        "de": "🔒 Diese Option gibt's mit Abo oder dem Paket «Alle Einstellungen»"},
+    "cu_locked_text": {"ru": "Хочешь, чтобы я стала именно такой? 😏 Открой все настройки разом — навсегда, "
+                             "или возьми подписку (там они тоже есть):",
+                       "en": "Want me to be exactly like that? 😏 Unlock all settings forever, or get a "
+                             "subscription (they're included):",
+                       "de": "Willst du mich genau so? 😏 Schalte alle Einstellungen für immer frei oder hol dir "
+                             "ein Abo (da sind sie dabei):"},
+    "cu_sub_btn": {"ru": "⭐ Подписка на 7 дней", "en": "⭐ 7-day subscription", "de": "⭐ 7-Tage-Abo"},
+    "cu_nick_ask": {"ru": "Как мне тебя называть? Напиши прозвище одним сообщением 🙂",
+                    "en": "What should I call you? Send the nickname in one message 🙂",
+                    "de": "Wie soll ich dich nennen? Schick den Spitznamen in einer Nachricht 🙂"},
+    "cu_nick_set": {"ru": "Договорились, {n} 😊", "en": "Deal, {n} 😊", "de": "Abgemacht, {n} 😊"},
+    "cu_nick_bad": {"ru": "Такое прозвище не подойдёт 🙈 Попробуй другое через «⚙️ Настрой Алису».",
+                    "en": "That nickname won't work 🙈 Try another via «⚙️ Customize Alice».",
+                    "de": "Der Spitzname geht nicht 🙈 Probier einen anderen über «⚙️ Alice anpassen»."},
+    "cu_unlocked": {"ru": "Все настройки открыты навсегда 🔓 Делай меня такой, как хочешь 😏 → /custom",
+                    "en": "All settings unlocked forever 🔓 Make me however you like 😏 → /custom",
+                    "de": "Alle Einstellungen für immer freigeschaltet 🔓 Mach mich, wie du willst 😏 → /custom"},
     "lang_hint": {"ru": "\n\n🌐 Язык: русский. Сменить: /language",
                   "en": "\n\n🌐 Language: English. Change: /language",
                   "de": "\n\n🌐 Sprache: Deutsch. Ändern: /language"},
@@ -1040,6 +1076,9 @@ NEW_COLS = {
     "paywall_at": "TEXT",
     "active_days": "INTEGER NOT NULL DEFAULT 0",
     "last_active_day": "TEXT",
+    "custom": "TEXT",
+    "custom_unlocked": "INTEGER NOT NULL DEFAULT 0",
+    "awaiting_nick": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -1050,6 +1089,7 @@ USER_FIELDS = {
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
     "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
+    "custom", "custom_unlocked", "awaiting_nick",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -1344,6 +1384,9 @@ def build_system(u: dict) -> str:
             f"«{BTN['modes'][L]}» внизу → «{tr(L, 'scen_spicy')}», и там ты смелее. "
             "Подсказывай это не чаще одного раза за несколько сообщений; если уже подсказала недавно, просто "
             "отшутись. Откровенные фото не обещай.")
+    cp = custom_prompt(u)
+    if cp:
+        parts.append(cp)
     if u["memory_note"]:
         parts.append("Что ты помнишь о собеседнике: " + u["memory_note"])
     if VOICE_ENABLED:
@@ -1483,6 +1526,7 @@ def modes_kb(u: dict) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=("✅ " if cur == k else "") + scen_label(k, L), callback_data=f"mode:{k}")]
             for k in SCENARIOS if mode_allowed(u, k)]
     rows.append([InlineKeyboardButton(text=("✅ " if cur == "rp" else "") + tr(L, "mode_rp"), callback_data="mode:rp")])
+    rows.append([InlineKeyboardButton(text=tr(L, "cu_btn"), callback_data="cu:menu")])
     g = u.get("gender") if u.get("gender") in ("m", "f", "x") else "x"
     rows.append([InlineKeyboardButton(text=tr(L, "my_gender_btn", g=tr(L, "g_label_" + g)), callback_data="mode:gender")])
     rows.append([InlineKeyboardButton(text=tr(L, "lang_btn", l=LANG_NAMES[L]), callback_data="mode:lang")])
@@ -2601,6 +2645,258 @@ async def cb_mode(c: types.CallbackQuery):
     await c.message.answer(intro + (premium_note(u, L) if key in PREMIUM_MODES else ""))
 
 
+
+# ============================ НАСТРОЙ АЛИСУ ============================
+# Категория -> (эмодзи, название на трёх языках)
+CUSTOM_CATS = {
+    "char": ("🎭", {"ru": "Характер", "en": "Personality", "de": "Charakter"}),
+    "role": ("💞", {"ru": "Кто она тебе", "en": "Who she is to you", "de": "Wer sie für dich ist"}),
+    "call": ("💬", {"ru": "Как обращается", "en": "What she calls you", "de": "Wie sie dich nennt"}),
+    "style": ("✍️", {"ru": "Стиль переписки", "en": "Texting style", "de": "Schreibstil"}),
+    "look": ("👗", {"ru": "Образ на фото", "en": "Look in photos", "de": "Look auf Fotos"}),
+    "hobby": ("🎮", {"ru": "Увлечения", "en": "Hobbies", "de": "Hobbys"}),
+}
+# Вариант -> (эмодзи, ru, en, de, инструкция для Алисы, платный ли)
+CUSTOM_OPTS = {
+    "char": {
+        "tender": ("🥰", "Нежная", "Tender", "Zärtlich",
+                   "Твой характер сейчас: нежная и заботливая, говоришь мягко и тепло, много ласки.", False),
+        "cheerful": ("😄", "Весёлая", "Cheerful", "Fröhlich",
+                     "Твой характер сейчас: весёлая и озорная, много шутишь, легко смеёшься, заряжаешь энергией.", False),
+        "shy": ("🙈", "Застенчивая", "Shy", "Schüchtern",
+                "Твой характер сейчас: застенчивая и милая, иногда смущаешься и краснеешь, но тянешься к собеседнику.",
+                False),
+        "cheeky": ("😏", "Дерзкая", "Cheeky", "Frech",
+                   "Твой характер сейчас: дерзкая и острая на язык, подкалываешь, споришь, дразнишь, но с теплом внутри.",
+                   True),
+        "dominant": ("👠", "Властная", "Dominant", "Dominant",
+                     "Твой характер сейчас: властная и уверенная, сама ведёшь разговор, решаешь, любишь, когда тебя "
+                     "слушаются (как игра и флирт, без унижений).", True),
+        "mysterious": ("🌙", "Загадочная", "Mysterious", "Geheimnisvoll",
+                       "Твой характер сейчас: загадочная, говоришь намёками, не раскрываешь всё сразу, интригуешь.", True),
+    },
+    "role": {
+        "gf": ("❤️", "Девушка", "Girlfriend", "Freundin",
+               "Кто ты для собеседника: его девушка, вы встречаетесь.", False),
+        "friend": ("🤝", "Подруга", "Friend", "Kumpeline",
+                   "Кто ты для собеседника: близкая подруга.", False),
+        "neighbor": ("🚪", "Соседка", "Neighbor", "Nachbarin",
+                     "Кто ты для собеседника: соседка по лестничной клетке, вы недавно познакомились и часто "
+                     "пересекаетесь.", True),
+        "colleague": ("💼", "Коллега", "Colleague", "Kollegin",
+                      "Кто ты для собеседника: коллега по работе, между вами давно искрит.", True),
+        "ex": ("💔", "Бывшая", "Ex", "Ex",
+               "Кто ты для собеседника: его бывшая. Вы расстались, но вас до сих пор тянет друг к другу, "
+               "и в разговоре много недосказанного.", True),
+        "stranger": ("☕", "Незнакомка", "Stranger", "Fremde",
+                     "Кто ты для собеседника: вы случайно познакомились в кафе, ты почти ничего о нём не знаешь, "
+                     "но он тебя заинтриговал.", True),
+    },
+    "call": {
+        "name": ("🙂", "По имени", "By name", "Beim Namen", "Обращайся к собеседнику по имени.", False),
+        "sweet": ("🐱", "Котик / зай", "Sweetie / babe", "Schatz / Süßer",
+                  "Обращайся к собеседнику ласковыми прозвищами (котик, зай, солнце — чередуй).", False),
+        "dear": ("💕", "Милый", "Darling", "Liebling",
+                 "Обращайся к собеседнику «милый» или «дорогой» (в женском роде, если это девушка).", False),
+        "nick": ("✏️", "Своё прозвище", "Own nickname", "Eigener Spitzname", "", True),
+    },
+    "style": {
+        "short": ("⚡", "Коротко", "Short", "Kurz",
+                  "Стиль: пиши коротко, 1–2 предложения, как в мессенджере. Эта настройка важнее общих правил о длине.",
+                  False),
+        "long": ("📜", "Развёрнуто", "Detailed", "Ausführlich",
+                 "Стиль: пиши развёрнуто, 3–5 предложений, с деталями. Эта настройка важнее общих правил о длине.",
+                 False),
+        "emoji": ("🤩", "Много эмодзи", "Lots of emoji", "Viele Emojis",
+                  "Стиль: используй много эмодзи в каждом сообщении.", False),
+        "noemoji": ("🚫", "Без эмодзи", "No emoji", "Keine Emojis", "Стиль: не используй эмодзи вообще.", False),
+    },
+    "look": {
+        "default": ("🖤", "Как сейчас", "As now", "Wie jetzt", "", False),
+        "blonde": ("👱‍♀️", "Блондинка", "Blonde", "Blond", "Сейчас ты покрасилась в блондинку.", True),
+        "redhead": ("🦊", "Рыжая", "Redhead", "Rothaarig", "Сейчас ты покрасилась в рыжий.", True),
+        "bob": ("✂️", "Короткое каре", "Short bob", "Kurzer Bob", "Сейчас у тебя короткое каре.", True),
+        "sporty": ("🏃‍♀️", "Спортивный стиль", "Sporty", "Sportlich", "Сейчас ты носишь спортивный стиль.", True),
+        "elegant": ("👗", "Элегантный стиль", "Elegant", "Elegant", "Сейчас ты носишь элегантные платья.", True),
+    },
+    "hobby": {
+        "games": ("🎮", "Игры", "Gaming", "Gaming", "Ты увлекаешься видеоиграми.", False),
+        "anime": ("🌸", "Аниме", "Anime", "Anime", "Ты увлекаешься аниме.", False),
+        "sport": ("💪", "Спорт", "Sports", "Sport", "Ты увлекаешься спортом и тренировками.", False),
+        "music": ("🎸", "Музыка", "Music", "Musik", "Ты увлекаешься музыкой и концертами.", False),
+        "movies": ("🎬", "Кино", "Movies", "Filme", "Ты увлекаешься кино и сериалами.", False),
+        "books": ("📚", "Книги", "Books", "Bücher", "Ты увлекаешься книгами.", False),
+        "travel": ("✈️", "Путешествия", "Travel", "Reisen", "Ты увлекаешься путешествиями.", False),
+    },
+}
+ROMANTIC_ROLES = {"gf", "ex"}
+LOOK_EN = {"blonde": "with blonde hair", "redhead": "with red hair", "bob": "with a short bob haircut",
+           "sporty": "wearing a sporty outfit", "elegant": "wearing an elegant dress"}
+
+
+def get_custom(u: dict) -> dict:
+    try:
+        d = json.loads(u.get("custom") or "{}")
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def custom_premium_ok(u: dict) -> bool:
+    return bool(u.get("custom_unlocked")) or has_sub(u) or is_admin(u["id"])
+
+
+def custom_opt_allowed(u: dict, cat: str, key: str) -> bool:
+    return not (cat == "role" and key in ROMANTIC_ROLES and u.get("gender") == "f")
+
+
+def opt_label(cat: str, key: str, lang: str) -> str:
+    o = CUSTOM_OPTS[cat][key]
+    return f"{o[0]} " + {"ru": o[1], "en": o[2], "de": o[3]}.get(lang, o[1])
+
+
+def custom_prompt(u: dict) -> str:
+    """Инструкция для Алисы по настройкам пользователя (пусто, если ничего не настроено)."""
+    c = get_custom(u)
+    parts = []
+    for cat in ("char", "role", "style", "look", "hobby"):
+        key = c.get(cat)
+        if key in CUSTOM_OPTS[cat] and custom_opt_allowed(u, cat, key):
+            text = CUSTOM_OPTS[cat][key][4]
+            if text and (not CUSTOM_OPTS[cat][key][5] or custom_premium_ok(u)):
+                parts.append(text)
+    call = c.get("call")
+    if call == "nick" and c.get("nick") and custom_premium_ok(u):
+        parts.append(f"Обращайся к собеседнику «{c['nick']}» (это его любимое прозвище).")
+    elif call in CUSTOM_OPTS["call"] and CUSTOM_OPTS["call"][call][4]:
+        parts.append(CUSTOM_OPTS["call"][call][4])
+    if not parts:
+        return ""
+    return ("Собеседник сам настроил тебя под себя (это важнее общих описаний характера, но правила безопасности "
+            "и твой возраст 23 года не меняются): " + " ".join(parts))
+
+
+def custom_look_en(u: dict) -> str:
+    key = get_custom(u).get("look")
+    if key in LOOK_EN and custom_premium_ok(u):
+        return LOOK_EN[key]
+    return ""
+
+
+def custom_menu(u: dict) -> tuple[str, InlineKeyboardMarkup]:
+    L = lang_of(u)
+    c = get_custom(u)
+    lines = []
+    for cat, (emo, names) in CUSTOM_CATS.items():
+        key = c.get(cat)
+        if key in CUSTOM_OPTS[cat]:
+            val = opt_label(cat, key, L)
+            if cat == "call" and key == "nick" and c.get("nick"):
+                val = f"✏️ «{c['nick']}»"
+        else:
+            val = tr(L, "cu_default")
+        lines.append(f"{emo} {names.get(L, names['ru'])}: {val}")
+    text = tr(L, "cu_title") + "\n\n" + "\n".join(lines)
+    if not custom_premium_ok(u):
+        text += "\n\n" + tr(L, "cu_lock_hint")
+    rows = [[InlineKeyboardButton(text=f"{emo} {names.get(L, names['ru'])}", callback_data=f"cu:cat:{cat}")]
+            for cat, (emo, names) in CUSTOM_CATS.items()]
+    rows.append([InlineKeyboardButton(text=tr(L, "cu_reset_btn"), callback_data="cu:reset"),
+                 InlineKeyboardButton(text=tr(L, "back_btn"), callback_data="mode:back")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def custom_cat_kb(u: dict, cat: str) -> InlineKeyboardMarkup:
+    L = lang_of(u)
+    cur = get_custom(u).get(cat)
+    ok = custom_premium_ok(u)
+    rows, row = [], []
+    for key, o in CUSTOM_OPTS[cat].items():
+        if not custom_opt_allowed(u, cat, key):
+            continue
+        mark = "✅ " if cur == key else ("🔒 " if o[5] and not ok else "")
+        row.append(InlineKeyboardButton(text=mark + opt_label(cat, key, L), callback_data=f"cu:set:{cat}:{key}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text=tr(L, "back_btn"), callback_data="cu:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(Command("custom"))
+async def cmd_custom(m: types.Message):
+    u = await get_user(m.from_user.id)
+    text, kb = custom_menu(u)
+    await m.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("cu:"))
+async def cb_custom(c: types.CallbackQuery):
+    uid = c.from_user.id
+    u = await get_user(uid)
+    L = lang_of(u)
+    parts = c.data.split(":")
+    if parts[1] == "menu":
+        text, kb = custom_menu(u)
+        try:
+            await c.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            pass
+        await c.answer()
+        return
+    if parts[1] == "reset":
+        await set_fields(uid, custom=None, awaiting_nick=0)
+        u = await get_user(uid)
+        text, kb = custom_menu(u)
+        try:
+            await c.message.edit_text(text, reply_markup=kb)
+        except Exception:
+            pass
+        await c.answer(tr(L, "cu_reset_done"))
+        return
+    if parts[1] == "cat" and len(parts) == 3 and parts[2] in CUSTOM_CATS:
+        cat = parts[2]
+        emo, names = CUSTOM_CATS[cat]
+        try:
+            await c.message.edit_text(f"{emo} {names.get(L, names['ru'])}", reply_markup=custom_cat_kb(u, cat))
+        except Exception:
+            pass
+        await c.answer()
+        return
+    if parts[1] == "set" and len(parts) == 4 and parts[2] in CUSTOM_OPTS and parts[3] in CUSTOM_OPTS[parts[2]]:
+        cat, key = parts[2], parts[3]
+        if not custom_opt_allowed(u, cat, key):
+            await c.answer()
+            return
+        if CUSTOM_OPTS[cat][key][5] and not custom_premium_ok(u):
+            await c.answer(tr(L, "cu_locked_alert"), show_alert=True)
+            price = price_for("custom_unlock", await user_discount(uid))
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"{product_title('custom_unlock', L)} — {price}⭐",
+                                      callback_data="buy:custom_unlock")],
+                [InlineKeyboardButton(text=tr(L, "cu_sub_btn"), callback_data="buy:sub_week")]])
+            await c.message.answer(tr(L, "cu_locked_text"), reply_markup=kb)
+            return
+        data = get_custom(u)
+        data[cat] = key
+        await set_fields(uid, custom=json.dumps(data, ensure_ascii=False))
+        if cat == "call" and key == "nick":
+            await set_fields(uid, awaiting_nick=1)
+            await c.answer()
+            await c.message.answer(tr(L, "cu_nick_ask"))
+            return
+        u = await get_user(uid)
+        try:
+            await c.message.edit_reply_markup(reply_markup=custom_cat_kb(u, cat))
+        except Exception:
+            pass
+        await c.answer(tr(L, "cu_saved"))
+        return
+    await c.answer()
+
+
 @dp.callback_query(F.data.startswith("rp:"))
 async def cb_rp(c: types.CallbackQuery):
     uid = c.from_user.id
@@ -2746,6 +3042,9 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         if reason == "extremism" and not is_admin(uid):
             await log_flag(uid, "photo_extremism", prompt)
         return
+    look = custom_look_en(u)
+    if look:
+        prompt = f"{prompt}, {look}"
     if is_admin(uid) or has_sub(u):
         await m.answer(tr(L, "generating"))
         result = await deliver_photo(m.chat.id, prompt)
@@ -2792,6 +3091,18 @@ async def chat_core(m: types.Message, text: str) -> None:
             if kind == "jailbreak":
                 await log_flag(uid, kind, text)
                 await notify_admin(f"🚩 {FLAG_LABELS[kind]}\n{who(u)} /u_{uid}\n«{text[:200]}»", f"jb:{uid}")
+
+        if u.get("awaiting_nick"):
+            await set_fields(uid, awaiting_nick=0)
+            nick = re.sub(r"[\r\n«»\"<>]", "", text).strip()[:30]
+            if nick and moderate(nick) is None and prompt_allowed(nick):
+                data = get_custom(u)
+                data["call"], data["nick"] = "nick", nick
+                await set_fields(uid, custom=json.dumps(data, ensure_ascii=False))
+                await m.answer(tr(L, "cu_nick_set", n=nick))
+                return
+            await m.answer(tr(L, "cu_nick_bad"))
+            return
 
         if u.get("awaiting_plot"):
             await set_fields(uid, awaiting_plot=0)
@@ -3067,7 +3378,10 @@ async def on_payment(m: types.Message):
                     await m.answer(tr(L, "voice_refund_fail", c=SUPPORT_CONTACT))
         elif payload in PRODUCTS:
             product = PRODUCTS[payload]
-            if "msgs" in product:
+            if product.get("unlock"):
+                await set_fields(uid, custom_unlocked=1)
+                await m.answer(tr(L, "cu_unlocked"))
+            elif "msgs" in product:
                 await add_to(uid, "paid", product["msgs"])
                 await m.answer(tr(L, "msgs_added", n=product["msgs"]))
             else:
@@ -4053,6 +4367,7 @@ async def main():
     cmd_desc = {
         "start": ("Начать", "Start", "Starten"),
         "mode": ("Режим общения и ролевые игры", "Chat modes & roleplay", "Modi & Rollenspiele"),
+        "custom": ("Настроить Алису под себя", "Customize Alice", "Alice anpassen"),
         "language": ("Язык / Language", "Language", "Sprache"),
         "name": ("Сменить имя", "Change name", "Namen ändern"),
         "gender": ("Указать пол", "Set gender", "Geschlecht angeben"),
