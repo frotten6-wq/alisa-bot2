@@ -1721,7 +1721,11 @@ _PHOTO_NUDE_RE = re.compile(
     r"раздет|раздевается|раздень|сними\s+(?:трус|лифчик|бель|всё|все|одежд)|"
     r"nude|naked|topless|nipple|boob|tits|pussy|vagina|penis|dick|sex(?!y|ual)|porn|fuck|blowjob|undress|"
     r"without\s+(?:clothes|bra|panties|underwear)|nackt|oben\s+ohne|brustwarz|titten|muschi|ohne\s+"
-    r"(?:kleidung|bh|höschen|unterwäsche)|ausgezogen|porno|fick)", re.I)
+    r"(?:kleidung|bh|höschen|unterwäsche)|ausgezogen|porno|fick|"
+    # испанский, португальский, итальянский, французский, турецкий, арабский
+    r"desnud\w*|desvestid\w*|sin\s+ropa|pelad\w*|despid\w*|tetas|coño|polla|follar|"
+    r"nua\b|nu[ae]\b|nud[aoie]\w*|senza\s+vestiti|spogliat\w*|"
+    r"çıplak|soyun\w*|göğüs|عارية|عاري|جنس)", re.I)
 
 
 def photo_block_reason(p: str) -> str | None:
@@ -1820,6 +1824,17 @@ PHOTO_ASK_DE = re.compile(
     r"(?:foto|bild|selfie)\b[\s:,\-]*(.*)$", re.I | re.S)
 
 
+# Запрос фото на любом языке: слово «фото» плюс просьба. Нужно, чтобы испанец, француз или турок
+# тоже попадал в обычную воронку (ответ про бельё и платное фото), а не в бесконечный флирт.
+_PHOTO_WORD = re.compile(
+    r"(фото\w*|сел(?:фи|фь)\w*|photos?\b|pics?\b|picture|selfie|fotos?\b|bilder?\b|imagen\w*|imagin\w*|"
+    r"fotograf\w*|immagin\w*|resim\w*|görsel\w*|صور|صورة)", re.I)
+_PHOTO_WANT = re.compile(
+    r"(хочу|скинь|пришли|покажи|дай|отправь|сделай|want|send|show|give|see\b|quiero|quisiera|dame|manda\w*|"
+    r"env[íi]a\w*|mu[ée]stra\w*|ver\b|veux|envoie|montre|voglio|mandami|mostrami|quero|mostra|envia|"
+    r"istiyorum|g[öo]nder\w*|at\b|أريد|ارسل|أرسل)", re.I)
+
+
 def parse_photo_request(text: str) -> str | None:
     """Возвращает описание для фото, если сообщение похоже на запрос фото, иначе None."""
     mt = PHOTO_RE.match(text)
@@ -1829,6 +1844,9 @@ def parse_photo_request(text: str) -> str | None:
         mt = rx.match(text)
         if mt:
             return mt.group(1).strip()
+    # Запасной вариант для остальных языков: короткое сообщение со словом «фото» и просьбой
+    if len(text) <= 200 and _PHOTO_WORD.search(text) and _PHOTO_WANT.search(text):
+        return text.strip()
     return None
 
 
