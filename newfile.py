@@ -297,12 +297,10 @@ TX = {
     "lang_btn": {"ru": "🌐 Язык: {l}", "en": "🌐 Language: {l}", "de": "🌐 Sprache: {l}"},
     # --- возраст ---
     "age_text": {
-        "ru": "Этот бот только для совершеннолетних (18+). Подтверди, пожалуйста, свой возраст.\n\n"
-              "Продолжая, ты соглашаешься, что сообщения могут проверяться в целях безопасности.",
-        "en": "This bot is for adults only (18+). Please confirm your age.\n\n"
-              "By continuing, you agree that messages may be reviewed for safety.",
-        "de": "Dieser Bot ist nur für Erwachsene (18+). Bitte bestätige dein Alter.\n\n"
-              "Wenn du weitermachst, stimmst du zu, dass Nachrichten aus Sicherheitsgründen geprüft werden können."},
+        "ru": "Этот бот только для совершеннолетних (18+). Подтверди, пожалуйста, свой возраст.",
+        "en": "This bot is for adults only (18+). Please confirm your age.",
+        "de": "Dieser Bot ist nur für Erwachsene (18+). Bitte bestätige dein Alter."},
+    "privacy_btn": {"ru": "🔒 Конфиденциальность", "en": "🔒 Privacy", "de": "🔒 Datenschutz"},
     "age_yes": {"ru": "Мне есть 18", "en": "I'm 18+", "de": "Ich bin 18+"},
     "age_no": {"ru": "Мне нет 18", "en": "I'm under 18", "de": "Ich bin unter 18"},
     "denied": {"ru": "Этот бот только для совершеннолетних, так что нам не по пути.",
@@ -883,7 +881,7 @@ def age_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=tr(lang, "age_yes"), callback_data="age:yes"),
         InlineKeyboardButton(text=tr(lang, "age_no"), callback_data="age:no"),
-    ]])
+    ], [InlineKeyboardButton(text=tr(lang, "privacy_btn"), callback_data="age:privacy")]])
 
 
 def gender_kb(lang: str) -> InlineKeyboardMarkup:
@@ -2470,6 +2468,11 @@ async def age_cb(c: types.CallbackQuery):
     uid = c.from_user.id
     u = await get_user(uid)
     L = lang_of(u)
+    # Подробности о хранении и проверке сообщений — по кнопке, а не на первом экране
+    if c.data == "age:privacy":
+        await c.answer()
+        await c.message.answer(tr(L, "privacy", keep=HISTORY_KEEP, support=SUPPORT_CONTACT))
+        return
     if u["adult"] != 0:  # старые кнопки не должны менять уже принятое решение
         await c.answer()
         return
