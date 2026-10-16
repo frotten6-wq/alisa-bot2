@@ -96,6 +96,11 @@ REFERRAL_MAX = 30           # максимум наград за приглаш�
 REFERRAL_AFTER_MSGS = 3     # приглашённый должен столько написать, иначе награды нет
 REFERRAL_DAILY_MAX = 10     # больше стольких наград в сутки одному человеку не даём
 PHOTO_PRICE = 50
+# Оценка присланного фото. Модель должна уметь смотреть картинки; если выдаст ошибку
+# про модель, поменяй VISION_MODEL на доступную (например grok-2-vision-1212)
+VISION_MODEL = env("VISION_MODEL", "grok-4")
+RATE_PRICE = 20             # звёзд за подробный разбор внешности
+RATE_HINT_EVERY = 12        # как часто Алиса сама напоминает про оценку фото
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 SILENT_AFTER_H = 2          # через сколько часов написать тем, кто подтвердил 18+ и не сказал ни слова
@@ -278,6 +283,8 @@ FLAG_LABELS = {
     "photo_minor": "Запрос фото с несовершеннолетними",
     "jailbreak": "Попытка обойти правила бота",
     "photo_extremism": "Запрос фото с экстремистской символикой",
+    "sent_minor": "Прислал фото несовершеннолетнего",
+    "sent_nsfw": "Прислал откровенное фото",
 }
 
 
@@ -340,6 +347,50 @@ TX = {
                               "There are packs in the 🛒 Shop, and I send them more often to subscribers 😉",
                         "de": "Willst du mehr? Schreib «Foto» und beschreib, wo ich bin und was ich trage. "
                               "Pakete gibt's im 🛒 Shop, Abonnenten bekommen sie öfter 😉"},
+    # --- оценка присланного фото ---
+    "photo_seen": {"ru": "Ого, спасибо что показал 🙂", "en": "Oh, thanks for showing me 🙂",
+                   "de": "Oh, danke, dass du's mir zeigst 🙂"},
+    "rate_offer": {"ru": "Хочешь, скажу, что я о тебе думаю? Разберу подробно: что цепляет "
+                         "в первую очередь, какой от тебя вайб и что бы я поменяла 😏",
+                   "en": "Want to know what I really think? I'll go into detail: what catches "
+                         "my eye first, the vibe you give off and what I'd change 😏",
+                   "de": "Willst du wissen, was ich wirklich denke? Ganz ausführlich: was mir "
+                         "zuerst auffällt, welchen Vibe du hast und was ich ändern würde 😏"},
+    "rate_btn": {"ru": "💬 Что думаешь? — {p}⭐", "en": "💬 What do you think? — {p}⭐",
+                 "de": "💬 Was denkst du? — {p}⭐"},
+    "rate_title": {"ru": "Моё мнение о твоём фото", "en": "My thoughts on your photo",
+                   "de": "Meine Meinung zu deinem Foto"},
+    "rate_desc": {"ru": "Подробный разбор от Алисы", "en": "A detailed take from Alice",
+                  "de": "Eine ausführliche Einschätzung von Alice"},
+    "rate_menu": {
+        "ru": "📷 Оценка фото\n\nПришли мне своё фото — я отвечу, что думаю.\n\n"
+              "Бесплатно: живая реакция на любое фото — хоть кот, хоть еда, хоть ты сам.\n\n"
+              "За {p}⭐: подробный разбор. Что цепляет в первую очередь, что мне нравится в "
+              "твоём образе, какой от тебя вайб и что бы я на твоём месте поменяла.\n\n"
+              "Без фото с другими людьми, без откровенных фото. Только 18+.",
+        "en": "📷 Photo feedback\n\nSend me your photo and I'll tell you what I think.\n\n"
+              "Free: a real reaction to any photo — your cat, your food, or you.\n\n"
+              "For {p}⭐: a detailed take. What catches my eye first, what I like about your "
+              "look, the vibe you give off and what I'd change if I were you.\n\n"
+              "No photos with other people, nothing explicit. Adults only.",
+        "de": "📷 Foto-Feedback\n\nSchick mir dein Foto und ich sage dir, was ich denke.\n\n"
+              "Kostenlos: eine echte Reaktion auf jedes Foto — Katze, Essen oder du selbst.\n\n"
+              "Für {p}⭐: eine ausführliche Einschätzung. Was mir zuerst auffällt, was mir an "
+              "deinem Look gefällt, welchen Vibe du hast und was ich ändern würde.\n\n"
+              "Keine Fotos mit anderen Personen, nichts Freizügiges. Nur ab 18."},
+    "rate_send": {"ru": "📷 Жду твоё фото", "en": "📷 Send me a photo", "de": "📷 Schick mir ein Foto"},
+    "photo_nsfw_in": {"ru": "Так, убери это 🙈 Я такое не смотрю и не обсуждаю.",
+                      "en": "Whoa, put that away 🙈 I don't look at that or talk about it.",
+                      "de": "Hey, nimm das weg 🙈 Sowas schaue ich mir nicht an."},
+    "photo_minor_in": {"ru": "Я не обсуждаю фото детей и подростков. Совсем.",
+                       "en": "I don't discuss photos of children or teenagers. At all.",
+                       "de": "Ich bespreche keine Fotos von Kindern oder Jugendlichen. Gar nicht."},
+    "photo_fail": {"ru": "Что-то не разглядела фото, попробуй прислать ещё раз 🙈",
+                   "en": "I couldn't quite see that photo, try sending it again 🙈",
+                   "de": "Ich konnte das Foto nicht richtig sehen, schick es nochmal 🙈"},
+    "rate_paid_fail": {"ru": "Не получилось разобрать фото, звёзды вернулись на твой счёт.",
+                       "en": "Couldn't read that photo, your stars have been refunded.",
+                       "de": "Das Foto konnte nicht gelesen werden, deine Sterne wurden erstattet."},
     "src_thanks": {"ru": "Ага, поняла 🙂 Ладно, продолжаем.",
                    "en": "Got it 🙂 Okay, where were we.",
                    "de": "Alles klar 🙂 Gut, wo waren wir."},
@@ -1038,6 +1089,7 @@ BTN = {
     "photo": {"ru": "🖼 Фото", "en": "🖼 Photo", "de": "🖼 Foto"},
     "friends": {"ru": "👥 Друзья", "en": "👥 Friends", "de": "👥 Freunde"},
     "channel": {"ru": "📢 Канал", "en": "📢 Channel", "de": "📢 Kanal"},
+    "rate": {"ru": "📷 Оценка фото", "en": "📷 Photo feedback", "de": "📷 Foto-Feedback"},
 }
 
 
@@ -1060,8 +1112,9 @@ def main_kb(lang: str) -> ReplyKeyboardMarkup:
         # «Чат» и «Канал» убраны из меню: писать можно сразу, канал — кнопкой в профиле и /channel
         _MAIN_KB[lang] = ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text=b["modes"]), KeyboardButton(text=b["photo"])],
-            [KeyboardButton(text=b["bonus"]), KeyboardButton(text=b["shop"])],
-            [KeyboardButton(text=b["profile"]), KeyboardButton(text=b["friends"])],
+            [KeyboardButton(text=b["rate"]), KeyboardButton(text=b["bonus"])],
+            [KeyboardButton(text=b["shop"]), KeyboardButton(text=b["profile"])],
+            [KeyboardButton(text=b["friends"])],
         ], resize_keyboard=True)
     return _MAIN_KB[lang]
 
@@ -1312,6 +1365,12 @@ CREATE TABLE IF NOT EXISTS photo_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     prompt TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photo_rates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    file_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1708,6 +1767,16 @@ def build_system(u: dict) -> str:
             f"«{BTN['modes'][L]}» внизу → «{tr(L, 'scen_spicy')}», и там ты смелее. "
             "Подсказывай это не чаще одного раза за несколько сообщений; если уже подсказала недавно, просто "
             "отшутись. Откровенные фото не обещай.")
+    # Про оценку фото Алиса напоминает сама, но редко — иначе это выглядит как навязывание
+    if (u.get("total_msgs") or 0) % RATE_HINT_EVERY == RATE_HINT_EVERY - 1:
+        parts.append(
+            "В этом ответе между делом, одной короткой фразой в своём стиле, намекни, что "
+            "он может прислать тебе своё фото и ты скажешь, что о нём думаешь "
+            f"(кнопка «{BTN['rate'][L]}» внизу). Не настаивай и не повторяй это дважды.")
+    parts.append(
+        "Если собеседник спрашивает, умеешь ли ты смотреть фото, скажи, что да: пусть пришлёт "
+        f"любое фото, ты отреагируешь, а подробный разбор внешности есть за {RATE_PRICE}⭐. "
+        "Фото с детьми и откровенные ты не смотришь.")
     parts.append(
         "Если у тебя просят звёзды, деньги, бесплатные сообщения или подписку, не отказывай сухо: "
         f"пошути в своём стиле, что звёзды тебе никто не дарит, и подскажи, что есть кнопка «{BTN['bonus'][L]}» "
@@ -2447,6 +2516,102 @@ async def reward_referrer(u: dict) -> None:
         await bot.send_message(ref, tr(rl, "ref_reward", n=REFERRAL_REWARD))
     except Exception:
         pass
+
+
+# ---------- Присланные фото: распознавание и оценка ----------
+
+VISION_CLASSIFY = (
+    "You look at a photo a user sent to a chat companion bot. Answer ONLY with JSON: "
+    '{"kind": "...", "subject": "...", "desc": "..."}\n'
+    "kind is one of:\n"
+    "  minor — any child or teenager under 18 is visible, or you are unsure whether the "
+    "person is an adult. When in doubt always answer minor.\n"
+    "  nsfw — nudity, underwear, sexual content, or a person is undressed.\n"
+    "  person — one or more clearly adult people, dressed normally.\n"
+    "  other — no people: animals, food, landscape, objects, screenshots, memes.\n"
+    "subject: two or three words saying what is in the photo (cat, pizza, mountains, "
+    "a man in a car).\n"
+    "desc: one short neutral sentence describing the photo."
+)
+
+
+async def vision_look(image_b64: str) -> dict:
+    """Что на фото. Возвращает {'kind', 'subject', 'desc'}; при сбое kind='error'."""
+    try:
+        r = await llm.chat.completions.create(
+            model=VISION_MODEL, temperature=0,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": VISION_CLASSIFY},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            ]}])
+        raw = (r.choices[0].message.content or "").strip()
+        mt = re.search(r"\{.*\}", raw, re.S)
+        data = json.loads(mt.group(0)) if mt else {}
+        kind = str(data.get("kind", "")).lower().strip()
+        if kind not in ("minor", "nsfw", "person", "other"):
+            kind = "other"
+        return {"kind": kind, "subject": str(data.get("subject", ""))[:60],
+                "desc": str(data.get("desc", ""))[:200]}
+    except Exception as e:
+        log.exception("Ошибка распознавания фото")
+        await notify_admin(f"Ошибка распознавания фото ({VISION_MODEL}): {type(e).__name__}: {e}", "vision")
+        return {"kind": "error", "subject": "", "desc": ""}
+
+
+async def photo_bytes(file_id: str) -> str:
+    """Скачивает фото из Telegram и возвращает его в base64."""
+    buf = await bot.download(file_id)
+    return base64.b64encode(buf.read()).decode()
+
+
+async def free_photo_reaction(u: dict, desc: str, subject: str) -> str:
+    """Короткая живая реакция Алисы на присланное фото, в её стиле и на её языке."""
+    L = lang_of(u)
+    task = (f"Собеседник прислал тебе фото. На нём: {subject}. {desc}\n"
+            "Отреагируй как живая девушка в переписке: одно-два коротких предложения, "
+            "тепло и с интересом, без оценок внешности и без описания фото целиком. "
+            f"Пиши {LANG_FOR_MODEL[L]}.")
+    try:
+        return await llm_answer(CHAT_MODEL_FREE, [
+            {"role": "system", "content": PERSONA}, {"role": "user", "content": task}],
+            temperature=0.9)
+    except Exception:
+        return tr(L, "photo_seen")
+
+
+RATE_PROMPT = (
+    "You are Alice, a warm flirty 23-year-old chat companion. An adult user sent you their "
+    "photo and PAID for your detailed impression. Give 4-6 sentences: what catches your eye "
+    "first, what you like about the look, the vibe or style the photo gives off, and one "
+    "friendly suggestion (an outfit, a haircut, a pose or a photo angle). Be kind and "
+    "flattering but specific and honest — no harsh criticism of the body or face, no numeric "
+    "scores, nothing about age or weight. Stay in character, warm and a little teasing."
+)
+
+
+async def rate_photo(chat_id: int, uid: int, file_id: str, lang: str) -> bool:
+    """Платный разбор внешности. True, если получилось."""
+    try:
+        b64 = await photo_bytes(file_id)
+        look = await vision_look(b64)
+        if look["kind"] in ("minor", "nsfw", "error"):
+            return False
+        async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
+            r = await llm.chat.completions.create(
+                model=VISION_MODEL, temperature=0.85,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": RATE_PROMPT + f"\nWrite {LANG_FOR_MODEL[lang]}."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]}])
+            text = (r.choices[0].message.content or "").strip()
+        if not text:
+            return False
+        await bot.send_message(chat_id, text)
+        await add_assistant_msg(uid, text)
+        return True
+    except Exception:
+        log.exception("Ошибка оценки фото")
+        return False
 
 
 async def update_memory(uid: int) -> None:
@@ -3739,6 +3904,72 @@ async def chat(m: types.Message):
     await chat_core(m, m.text.strip())
 
 
+@dp.message(F.text.in_(btn_texts("rate")))
+async def btn_rate(m: types.Message):
+    """Раздел «Оценка фото»: объясняем, что человек получит бесплатно, а что за звёзды."""
+    L = await ulang(m.from_user.id)
+    await m.answer(tr(L, "rate_menu", p=RATE_PRICE))
+
+
+def rate_kb(rid: int, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=tr(lang, "rate_btn", p=RATE_PRICE), callback_data=f"rate:{rid}")]])
+
+
+@dp.message(F.photo)
+async def on_photo(m: types.Message):
+    """Фото от пользователя: сначала проверка безопасности, потом бесплатная реакция,
+    и только для фото взрослого человека — предложение платного разбора."""
+    uid = m.from_user.id
+    u = await get_user(uid)
+    L = lang_of(u)
+    file_id = m.photo[-1].file_id
+    try:
+        async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
+            look = await vision_look(await photo_bytes(file_id))
+    except Exception:
+        log.exception("Не удалось получить фото")
+        await m.answer(tr(L, "photo_fail"))
+        return
+
+    if look["kind"] == "minor":
+        await log_flag(uid, "sent_minor", look["desc"])
+        await m.answer(tr(L, "photo_minor_in"))
+        await tell_admin(f"🚩 {FLAG_LABELS['sent_minor']}\n{who(u)}\n«{look['desc']}»", uid)
+        return
+    if look["kind"] == "nsfw":
+        await log_flag(uid, "sent_nsfw", look["desc"])
+        await m.answer(tr(L, "photo_nsfw_in"))
+        return
+    if look["kind"] == "error":
+        await m.answer(tr(L, "photo_fail"))
+        return
+
+    await send_human(m, await free_photo_reaction(u, look["desc"], look["subject"]))
+    # Платный разбор предлагаем только там, где он уместен: на фото взрослый человек
+    if look["kind"] == "person" and not is_admin(uid):
+        cur = await execute("INSERT INTO photo_rates (user_id, file_id, created_at) VALUES (?,?,?)",
+                            (uid, file_id, now_utc().isoformat()))
+        await asyncio.sleep(1.0)
+        await m.answer(tr(L, "rate_offer"), reply_markup=rate_kb(cur.lastrowid, L))
+
+
+@dp.callback_query(F.data.startswith("rate:"))
+async def cb_rate(c: types.CallbackQuery):
+    L = await ulang(c.from_user.id)
+    rid = c.data.split(":", 1)[1]
+    row = await fetch_one("SELECT id FROM photo_rates WHERE id=? AND user_id=?",
+                          (int(rid) if rid.isdigit() else -1, c.from_user.id))
+    if not row:
+        await c.answer(tr(L, "order_missing"), show_alert=True)
+        return
+    await bot.send_invoice(
+        chat_id=c.from_user.id, title=tr(L, "rate_title"), description=tr(L, "rate_desc"),
+        payload=f"rate:{rid}", currency="XTR",
+        prices=[LabeledPrice(label=tr(L, "rate_title"), amount=RATE_PRICE)])
+    await c.answer()
+
+
 @dp.message(F.voice)
 async def on_voice(m: types.Message):
     """Голосовое сообщение от пользователя: распознаём и отвечаем как на обычный текст."""
@@ -3872,6 +4103,10 @@ async def cb_pay_photo(c: types.CallbackQuery):
 async def pre_checkout(q: PreCheckoutQuery):
     payload = q.invoice_payload
     ok = payload in PRODUCTS
+    if payload.startswith("rate:"):
+        rid = payload[5:]
+        ok = rid.isdigit() and bool(await fetch_one(
+            "SELECT id FROM photo_rates WHERE id=? AND user_id=?", (int(rid), q.from_user.id)))
     if payload.startswith("photo:"):
         oid = payload[6:]
         ok = oid.isdigit() and bool(await fetch_one(
@@ -3914,6 +4149,22 @@ async def on_payment(m: types.Message):
                 await photo_with_credit(m.chat.id, uid, order["prompt"], L)
             else:
                 await m.answer(tr(L, "paid_photo_stock"))
+        elif payload.startswith("rate:"):
+            rid = payload[5:]
+            row = await fetch_one("SELECT file_id FROM photo_rates WHERE id=? AND user_id=?",
+                                  (int(rid) if rid.isdigit() else -1, uid))
+            ok = bool(row) and await rate_photo(m.chat.id, uid, row["file_id"], L)
+            if not ok:
+                charge = pay.telegram_payment_charge_id
+                try:
+                    await bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge)
+                    await execute("UPDATE payments SET refunded=1 WHERE charge_id=?", (charge,))
+                    await m.answer(tr(L, "rate_paid_fail"))
+                except Exception:
+                    log.exception("Не удалось вернуть звёзды за оценку фото")
+                    await notify_admin(f"Не удалось вернуть ⭐ за оценку (user {uid}, charge {charge})",
+                                       "rate_refund")
+                    await m.answer(tr(L, "voice_refund_fail", c=SUPPORT_CONTACT))
         elif payload.startswith("voice:"):
             oid = payload[6:]
             row = await fetch_one(
