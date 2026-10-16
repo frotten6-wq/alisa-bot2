@@ -318,6 +318,22 @@ TX = {
         "en": "This bot is for adults only (18+). Please confirm your age.",
         "de": "Dieser Bot ist nur für Erwachsene (18+). Bitte bestätige dein Alter."},
     "privacy_btn": {"ru": "🔒 Конфиденциальность", "en": "🔒 Privacy", "de": "🔒 Datenschutz"},
+    # --- вопрос про источник ---
+    "ask_source": {"ru": "Слушай, а ты вообще как меня нашёл? 🙂",
+                   "en": "Hey, how did you even find me? 🙂",
+                   "de": "Sag mal, wie hast du mich eigentlich gefunden? 🙂"},
+    "src_tiktok": {"ru": "📱 TikTok", "en": "📱 TikTok", "de": "📱 TikTok"},
+    "src_channel": {"ru": "📢 Канал в телеге", "en": "📢 A Telegram channel",
+                    "de": "📢 Ein Telegram-Kanal"},
+    "src_chat": {"ru": "💬 Увидел в чате", "en": "💬 Saw it in a chat",
+                 "de": "💬 In einem Chat gesehen"},
+    "src_friend": {"ru": "👥 Друг скинул", "en": "👥 A friend sent it",
+                   "de": "👥 Ein Freund hat's geschickt"},
+    "src_search": {"ru": "🔍 Искал сам", "en": "🔍 Searched for it", "de": "🔍 Selbst gesucht"},
+    "src_other": {"ru": "🤷 Не помню", "en": "🤷 Don't remember", "de": "🤷 Weiß nicht mehr"},
+    "src_thanks": {"ru": "Ага, поняла 🙂 Ладно, продолжаем.",
+                   "en": "Got it 🙂 Okay, where were we.",
+                   "de": "Alles klar 🙂 Gut, wo waren wir."},
     "age_yes": {"ru": "Мне есть 18", "en": "I'm 18+", "de": "Ich bin 18+"},
     "age_no": {"ru": "Мне нет 18", "en": "I'm under 18", "de": "Ich bin unter 18"},
     "denied": {"ru": "Этот бот только для совершеннолетних, так что нам не по пути.",
@@ -1053,6 +1069,17 @@ def age_kb(lang: str) -> InlineKeyboardMarkup:
     ], [InlineKeyboardButton(text=tr(lang, "privacy_btn"), callback_data="age:privacy")]])
 
 
+SOURCE_ASK_AFTER = 3        # после скольких сообщений Алиса спрашивает, откуда человек пришёл
+SOURCE_OPTIONS = ("tiktok", "channel", "chat", "friend", "search", "other")
+
+
+def source_kb(lang: str) -> InlineKeyboardMarkup:
+    """Кнопки ответа на вопрос «как ты меня нашёл»: по две в ряд."""
+    btns = [InlineKeyboardButton(text=tr(lang, "src_" + k), callback_data=f"src:{k}")
+            for k in SOURCE_OPTIONS]
+    return InlineKeyboardMarkup(inline_keyboard=[btns[i:i + 2] for i in range(0, len(btns), 2)])
+
+
 def gender_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=tr(lang, "g_m"), callback_data="g:m"),
@@ -1344,6 +1371,7 @@ NEW_COLS = {
     "custom": "TEXT",
     "custom_unlocked": "INTEGER NOT NULL DEFAULT 0",
     "awaiting_nick": "INTEGER NOT NULL DEFAULT 0",
+    "source_asked": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -1354,7 +1382,7 @@ USER_FIELDS = {
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
     "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
-    "custom", "custom_unlocked", "awaiting_nick",
+    "custom", "custom_unlocked", "awaiting_nick", "source_asked",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -2776,6 +2804,26 @@ async def age_cb(c: types.CallbackQuery):
     await c.answer()
 
 
+@dp.callback_query(F.data.startswith("src:"))
+async def cb_source(c: types.CallbackQuery):
+    """Ответ на вопрос «как ты меня нашёл»: пишем в source с пометкой ask_."""
+    uid = c.from_user.id
+    u = await get_user(uid)
+    L = lang_of(u)
+    key = c.data.split(":", 1)[1]
+    if key not in SOURCE_OPTIONS:
+        await c.answer()
+        return
+    if not u.get("source"):
+        await set_fields(uid, source="ask_" + key)
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await c.answer()
+    await c.message.answer(tr(L, "src_thanks"))
+
+
 @dp.callback_query(F.data == "hi:skip")
 async def cb_hi_skip(c: types.CallbackQuery):
     """«Давай просто поболтаем»: имя не спрашиваем, разговор начинается сразу."""
@@ -3612,6 +3660,13 @@ async def chat_core(m: types.Message, text: str) -> None:
             spawn(update_memory(uid))
         if u.get("referrer") and not u.get("ref_rewarded"):
             spawn(reward_referrer(await get_user(uid)))
+
+        # Если метки в ссылке не было, Алиса сама спрашивает, откуда человек пришёл.
+        # Спрашиваем один раз, после нескольких сообщений, когда разговор уже завязался.
+        if (not u.get("source") and not u.get("source_asked")
+                and (u.get("total_msgs") or 0) + 1 >= SOURCE_ASK_AFTER and not admin):
+            await set_fields(uid, source_asked=1)
+            await m.answer(tr(L, "ask_source"), reply_markup=source_kb(L))
 
         await send_human(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
 
