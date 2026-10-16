@@ -118,6 +118,9 @@ RATE_HINT_EVERY = 12        # как часто Алиса сама напоми
 # Выключатели дорогих функций: пригодятся, когда надо экономить кредиты
 VISION_ENABLED = env("VISION_ENABLED", "1") == "1"      # смотреть присланные фото
 GIFT_PHOTO_ENABLED = env("GIFT_PHOTO_ENABLED", "0" if PROVIDER != "xai" else "1") == "1"
+# Генерация фото Алисы идёт через xAI и на другом провайдере недоступна.
+# Выключенной она не предлагает платных фото — иначе человек заплатит и ничего не получит.
+PHOTO_GEN_ENABLED = env("PHOTO_GEN_ENABLED", "0" if PROVIDER != "xai" else "1") == "1"
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 SILENT_AFTER_H = 2          # через сколько часов написать тем, кто подтвердил 18+ и не сказал ни слова
@@ -365,6 +368,12 @@ TX = {
                         "de": "Willst du mehr? Schreib «Foto» und beschreib, wo ich bin und was ich trage. "
                               "Pakete gibt's im 🛒 Shop, Abonnenten bekommen sie öfter 😉"},
     # --- оценка присланного фото ---
+    "photo_off": {"ru": "Свои фото я сейчас не отправляю 🙈 Зато могу посмотреть твоё: "
+                        "пришли, скажу, что думаю.",
+                  "en": "I'm not sending my photos right now 🙈 But I can look at yours: "
+                        "send one and I'll tell you what I think.",
+                  "de": "Meine Fotos verschicke ich gerade nicht 🙈 Aber ich kann deins ansehen: "
+                        "schick eins und ich sag dir, was ich denke."},
     "photo_seen": {"ru": "Ого, спасибо что показал 🙂", "en": "Oh, thanks for showing me 🙂",
                    "de": "Oh, danke, dass du's mir zeigst 🙂"},
     "rate_offer": {"ru": "Хочешь, скажу, что я о тебе думаю? Разберу подробно: что цепляет "
@@ -1921,6 +1930,8 @@ async def cat_markup(uid: int, cat: str) -> InlineKeyboardMarkup:
     rows = []
     for k, p in PRODUCTS.items():
         if p.get("cat") != cat:
+            continue
+        if p.get("photos") and not PHOTO_GEN_ENABLED:
             continue
         price = price_for(k, pct)
         label = f"{product_title(k, L)} — {price}⭐" + (f" ({tr(L, 'was', p=p['price'])})" if pct else "")
@@ -3656,7 +3667,7 @@ async def btn_bonus(m: types.Message):
 @dp.message(F.text.in_(btn_texts("photo")))
 async def btn_photo(m: types.Message):
     L = await ulang(m.from_user.id)
-    await m.answer(tr(L, "photo_help"))
+    await m.answer(tr(L, "photo_help" if PHOTO_GEN_ENABLED else "photo_off"))
 
 
 @dp.message(F.text.in_(btn_texts("channel")))
@@ -3725,6 +3736,9 @@ async def btn_ref(m: types.Message):
 async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
     uid = m.from_user.id
     L = lang_of(u)
+    if not PHOTO_GEN_ENABLED:
+        await m.answer(tr(L, "photo_off"))
+        return
     prompt = prompt or "portrait, soft smile"
     if not prompt_allowed(prompt):
         # Предупреждение выдаём только если в запросе есть и несовершеннолетний, и сексуальный контекст.
