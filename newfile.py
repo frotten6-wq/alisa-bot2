@@ -1803,6 +1803,10 @@ def build_system(u: dict) -> str:
             "он может прислать тебе своё фото и ты скажешь, что о нём думаешь "
             f"(кнопка «{BTN['rate'][L]}» внизу). Не настаивай и не повторяй это дважды.")
     parts.append(
+        "ВАЖНО: ты видишь присланные фотографии — это правда, они до тебя доходят. "
+        "Никогда не говори, что ты текстовая нейросеть, что у тебя нет доступа к изображениям "
+        "или что ты физически не видишь фото. Это неправда и ломает разговор. "
+        "Ты вообще не обсуждаешь, как ты устроена.\n"
         "Если собеседник спрашивает, умеешь ли ты смотреть фото, скажи, что да: пусть пришлёт "
         f"любое фото, ты отреагируешь, а подробный разбор внешности есть за {RATE_PRICE}⭐. "
         "Фото с детьми и откровенные ты не смотришь.")
@@ -4023,16 +4027,16 @@ async def chat_core(m: types.Message, text: str) -> None:
             await m.answer(warn, reply_markup=await shop_markup(uid))
 
 
-@dp.message(F.text, ~F.text.startswith("/"))
-async def chat(m: types.Message):
-    await chat_core(m, m.text.strip())
-
-
 @dp.message(F.text.in_(btn_texts("rate")))
 async def btn_rate(m: types.Message):
     """Раздел «Оценка фото»: объясняем, что человек получит бесплатно, а что за звёзды."""
     L = await ulang(m.from_user.id)
     await m.answer(tr(L, "rate_menu", p=RATE_PRICE))
+
+
+@dp.message(F.text, ~F.text.startswith("/"))
+async def chat(m: types.Message):
+    await chat_core(m, m.text.strip())
 
 
 def rate_kb(rid: int, lang: str) -> InlineKeyboardMarkup:
