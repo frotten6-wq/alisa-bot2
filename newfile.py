@@ -44,6 +44,13 @@ def env(name: str, default: str | None = None, required: bool = False) -> str | 
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", required=True)
 GROK_API_KEY = env("GROK_API_KEY", required=True)
+# Куда ходить за ответами модели. По умолчанию xAI, но можно подставить любой
+# OpenAI-совместимый сервис, не трогая код: например бесплатный тариф Gemini —
+#   LLM_BASE_URL = https://generativelanguage.googleapis.com/v1beta/openai/
+#   LLM_API_KEY  = ключ из Google AI Studio
+#   CHAT_MODEL / CHAT_MODEL_FREE / VISION_MODEL = gemini-3.6-flash (или другой доступный)
+LLM_BASE_URL = env("LLM_BASE_URL", "https://api.x.ai/v1")
+LLM_API_KEY = env("LLM_API_KEY") or GROK_API_KEY
 ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
 # На Railway подключи Volume в /data и задай DB_PATH=/data/bot.db, иначе база стирается при деплое
 DB_PATH = env("DB_PATH", "bot.db")
@@ -101,6 +108,9 @@ PHOTO_PRICE = 50
 VISION_MODEL = env("VISION_MODEL", "grok-4")
 RATE_PRICE = 20             # звёзд за подробный разбор внешности
 RATE_HINT_EVERY = 12        # как часто Алиса сама напоминает про оценку фото
+# Выключатели дорогих функций: пригодятся, когда надо экономить кредиты
+VISION_ENABLED = env("VISION_ENABLED", "1") == "1"      # смотреть присланные фото
+GIFT_PHOTO_ENABLED = env("GIFT_PHOTO_ENABLED", "1") == "1"   # дарить фото на 2-м сообщении
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 SILENT_AFTER_H = 2          # через сколько часов написать тем, кто подтвердил 18+ и не сказал ни слова
@@ -1186,7 +1196,7 @@ async def ulang(uid: int) -> str:
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
-llm = AsyncOpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1", timeout=90, max_retries=1)
+llm = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL, timeout=90, max_retries=1)
 _llm_create = llm.chat.completions.create
 
 
@@ -3866,8 +3876,8 @@ async def chat_core(m: types.Message, text: str) -> None:
 
         # Одно фото в подарок тем, кто начал разговор: человек из рекламы ждёт именно этого,
         # а на вопрос «как тебя зовут» уходит. Шлём один раз и дальше только платно.
-        if (not u.get("gift_photo") and (u.get("total_msgs") or 0) + 1 >= GIFT_PHOTO_AFTER
-                and not admin):
+        if (GIFT_PHOTO_ENABLED and not u.get("gift_photo")
+                and (u.get("total_msgs") or 0) + 1 >= GIFT_PHOTO_AFTER and not admin):
             spawn(send_gift_photo(m.chat.id, uid, L))
 
         # Если метки в ссылке не было, Алиса сама спрашивает, откуда человек пришёл.
@@ -3913,6 +3923,9 @@ async def on_photo(m: types.Message):
     uid = m.from_user.id
     u = await get_user(uid)
     L = lang_of(u)
+    if not VISION_ENABLED:
+        await m.answer(tr(L, "photo_seen"))
+        return
     file_id = m.photo[-1].file_id
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
