@@ -4364,11 +4364,34 @@ async def send_card(m: types.Message, uid: int) -> None:
     await m.answer(card[0], reply_markup=card[1])
 
 
-async def history_text(uid: int) -> str:
-    hist = await load_history(uid, 12)
+HIST_PER_PAGE = 8           # сообщений на странице истории в админке
+
+
+async def history_page(uid: int, page: int = 1) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Страница переписки: 1 — самые свежие сообщения, дальше вглубь."""
+    total = await scalar("SELECT COUNT(*) FROM history WHERE user_id=?", (uid,))
+    if not total:
+        return "История пуста", None
+    pages = max(1, (total + HIST_PER_PAGE - 1) // HIST_PER_PAGE)
+    page = max(1, min(page, pages))
+    rows = await fetch_all(
+        "SELECT role, content FROM history WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+        (uid, HIST_PER_PAGE, (page - 1) * HIST_PER_PAGE))
+
     def cut(t: str) -> str:
-        return t if len(t) <= 300 else t[:300] + "…"
-    return "\n".join(f"{'👤' if h['role'] == 'user' else '🤖'} {cut(h['content'])}" for h in hist) or "История пуста"
+        return t if len(t) <= 250 else t[:250] + "…"
+
+    body = "\n".join(f"{'👤' if h['role'] == 'user' else '🤖'} {cut(h['content'])}"
+                     for h in rows[::-1])   # внутри страницы — по порядку разговора
+    head = f"📜 /u_{uid} · страница {page}/{pages} · всего сообщений {total}"
+    nav = []
+    if page < pages:
+        nav.append(InlineKeyboardButton(text="⬆️ Раньше", callback_data=f"adm:hist:{uid}:{page + 1}"))
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬇️ Позже", callback_data=f"adm:hist:{uid}:{page - 1}"))
+    rows_kb = [nav] if nav else []
+    rows_kb.append([InlineKeyboardButton(text="👤 Профиль", callback_data=f"adm:open:{uid}")])
+    return f"{head}\n\n{body}", InlineKeyboardMarkup(inline_keyboard=rows_kb)
 
 
 async def payments_text(uid: int) -> str:
@@ -4728,7 +4751,8 @@ async def adm_history(m: types.Message, command: CommandObject):
     if not u:
         await m.answer("Использование: /history ID или @ник")
         return
-    await m.answer(await history_text(u["id"]))
+    text, kb = await history_page(u["id"], 1)
+    await m.answer(text, reply_markup=kb)
 
 
 @dp.message(Command("payments"), ADMIN)
@@ -4888,10 +4912,21 @@ async def cb_admin(c: types.CallbackQuery):
         await c.message.answer(card[0], reply_markup=card[1])
         await c.answer()
         return
-    if action in ("hist", "pay", "flags"):
-        if action == "hist":
-            text = await history_text(uid)
-        elif action == "pay":
+    if action == "hist":
+        # Листаем прямо в этом же сообщении, чтобы не засорять чат
+        page = int(arg) if arg.isdigit() else 1
+        text, kb = await history_page(uid, page)
+        if arg:
+            try:
+                await c.message.edit_text(text, reply_markup=kb)
+            except Exception:
+                await c.message.answer(text, reply_markup=kb)
+        else:
+            await c.message.answer(text, reply_markup=kb)
+        await c.answer()
+        return
+    if action in ("pay", "flags"):
+        if action == "pay":
             text = await payments_text(uid)
         else:
             text = await flags_text(uid)
