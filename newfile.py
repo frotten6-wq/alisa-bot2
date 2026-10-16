@@ -87,11 +87,10 @@ PREMIUM_FREE = 5            # сколько бесплатных/бонусны
 HISTORY_IN_PROMPT = 12      # сколько последних сообщений уходит в модель
 HISTORY_KEEP = 40           # сколько хранится в базе
 SUMMARY_EVERY = 20          # раз в N ответов обновляем «долгую память»
-BONUS_MESSAGES = 8          # базовая награда за ежедневный бонус
 BONUS_COOLDOWN_H = 20       # через сколько часов можно забрать следующий бонус
 BONUS_STREAK_WINDOW_H = 48  # если вернуться позже, серия обнуляется
-STREAK_STEP = 2             # на сколько растёт награда за каждый день серии
-STREAK_MAX_DAYS = 7         # после скольких дней награда перестаёт расти
+STREAK_REWARDS = (5, 7, 10)  # награда по дням серии; дальше не растёт
+STREAK_MAX_DAYS = len(STREAK_REWARDS)   # после скольких дней награда перестаёт расти
 REFERRAL_REWARD = 10
 REFERRAL_MAX = 30           # максимум наград за приглашения на одного пользователя
 REFERRAL_AFTER_MSGS = 3     # приглашённый должен столько написать, иначе награды нет
@@ -3442,7 +3441,8 @@ async def btn_shop(m: types.Message):
 
 
 def streak_reward(streak: int) -> int:
-    return BONUS_MESSAGES + STREAK_STEP * (min(max(streak, 1), STREAK_MAX_DAYS) - 1)
+    """Награда за день серии: 5 / 7 / 10, дальше остаётся 10."""
+    return STREAK_REWARDS[min(max(streak, 1), STREAK_MAX_DAYS) - 1]
 
 
 @dp.message(F.text.in_(btn_texts("bonus")))
