@@ -4217,7 +4217,7 @@ ADMIN_HELP = (
     "/stats — сводка\n"
     "/users — пользователи по разделам: платили, писали, не писали (кнопки внизу)\n"
     "/active — недавно активные\n"
-    "/user ID или @ник — профиль с кнопками (в списках тапай на /u_ID)\n"
+    "/user ID, @ник или часть имени — профиль с кнопками (в списках тапай на /u_ID)\n"
     "/sub ID ДНИ — выдать подписку (0 — снять)\n"
     "/give ID N — добавить платные сообщения\n"
     "/warn ID причина · /unwarn ID — предупреждения\n"
@@ -4240,14 +4240,28 @@ ADMIN_HELP = (
 )
 
 
-async def find_user(arg: str) -> dict | None:
-    """Ищет пользователя по ID или по @нику."""
+async def find_users(arg: str, limit: int = 10) -> list[dict]:
+    """Ищет людей по ID, @нику или части имени (имя в боте или имя в Telegram)."""
     arg = (arg or "").strip().lstrip("@")
     if not arg:
-        return None
+        return []
     if arg.isdigit():
-        return await fetch_one("SELECT * FROM users WHERE id=?", (int(arg),))
-    return await fetch_one("SELECT * FROM users WHERE lower(tg_username)=lower(?)", (arg,))
+        r = await fetch_one("SELECT * FROM users WHERE id=?", (int(arg),))
+        return [r] if r else []
+    exact = await fetch_one("SELECT * FROM users WHERE lower(tg_username)=lower(?)", (arg,))
+    if exact:
+        return [exact]
+    like = f"%{arg}%"
+    return await fetch_all(
+        "SELECT * FROM users WHERE lower(name) LIKE lower(?) OR lower(tg_name) LIKE lower(?) "
+        "OR lower(tg_username) LIKE lower(?) ORDER BY total_msgs DESC LIMIT ?",
+        (like, like, like, limit))
+
+
+async def find_user(arg: str) -> dict | None:
+    """Первый подходящий человек (для команд, где нужен ровно один)."""
+    rows = await find_users(arg, 1)
+    return rows[0] if rows else None
 
 
 async def target_and_rest(args: str | None) -> tuple[dict | None, str]:
@@ -4769,11 +4783,16 @@ async def adm_active(m: types.Message):
 
 @dp.message(Command("user"), ADMIN)
 async def adm_user(m: types.Message, command: CommandObject):
-    u = await find_user(command.args or "")
-    if not u:
-        await m.answer("Не найден. Использование: /user ID или /user @ник")
+    rows = await find_users(command.args or "")
+    if not rows:
+        await m.answer("Не найден. Использование: /user ID, @ник или часть имени")
         return
-    await send_card(m, u["id"])
+    if len(rows) > 1:
+        # Нашлось несколько — показываем список, карточка открывается тапом по /u_ID
+        text = "\n".join(user_line(r) for r in rows)
+        await m.answer(f"Нашлось несколько ({len(rows)}):\n{text}\n\n{USERS_LEGEND}")
+        return
+    await send_card(m, rows[0]["id"])
 
 
 @dp.message(F.text.startswith("/u_"), ADMIN)
