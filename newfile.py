@@ -44,21 +44,28 @@ def env(name: str, default: str | None = None, required: bool = False) -> str | 
 
 TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", required=True)
 GROK_API_KEY = env("GROK_API_KEY", required=True)
-# Куда ходить за ответами модели. По умолчанию xAI, но можно подставить любой
-# OpenAI-совместимый сервис, не трогая код: например бесплатный тариф Gemini —
-#   LLM_BASE_URL = https://generativelanguage.googleapis.com/v1beta/openai/
-#   LLM_API_KEY  = ключ из Google AI Studio
-#   CHAT_MODEL / CHAT_MODEL_FREE / VISION_MODEL = gemini-3.6-flash (или другой доступный)
-LLM_BASE_URL = env("LLM_BASE_URL", "https://api.x.ai/v1")
+# Какой сервис отвечает за Алису. PROVIDER=gemini переключает на бесплатный тариф Google:
+# достаточно задать PROVIDER=gemini и LLM_API_KEY (ключ из aistudio.google.com),
+# адрес и модели подставятся сами. Любую из них можно переопределить отдельной переменной.
+PROVIDER = (env("PROVIDER", "xai") or "xai").lower()
+PRESETS = {
+    "xai": {"base": "https://api.x.ai/v1", "chat": "grok-4",
+            "free": "grok-4-fast", "fallback": "grok-4", "vision": "grok-4"},
+    "gemini": {"base": "https://generativelanguage.googleapis.com/v1beta/openai/",
+               "chat": "gemini-3.6-flash", "free": "gemini-3.5-flash-lite",
+               "fallback": "gemini-3.5-flash-lite", "vision": "gemini-3.6-flash"},
+}
+PRESET = PRESETS.get(PROVIDER, PRESETS["xai"])
+LLM_BASE_URL = env("LLM_BASE_URL", PRESET["base"])
 LLM_API_KEY = env("LLM_API_KEY") or GROK_API_KEY
 ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
 # На Railway подключи Volume в /data и задай DB_PATH=/data/bot.db, иначе база стирается при деплое
 DB_PATH = env("DB_PATH", "bot.db")
-CHAT_MODEL = env("CHAT_MODEL", "grok-4")
+CHAT_MODEL = env("CHAT_MODEL", PRESET["chat"])
 # Модель для бесплатных сообщений, напоминаний и фоновой памяти. По умолчанию такая же, как CHAT_MODEL.
-CHAT_MODEL_FREE = env("CHAT_MODEL_FREE", CHAT_MODEL)
+CHAT_MODEL_FREE = env("CHAT_MODEL_FREE", PRESET["free"])
 # Запасная модель: на неё переключаемся, если основная перегружена (ошибка 429 resource-exhausted)
-CHAT_MODEL_FALLBACK = env("CHAT_MODEL_FALLBACK", "grok-4")
+CHAT_MODEL_FALLBACK = env("CHAT_MODEL_FALLBACK", PRESET["fallback"])
 LLM_BACKOFF = (2, 5, 15)    # паузы в секундах между повторными попытками
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
 # Модель для генерации по референсу (/v1/images/edits). Если вернёт ошибку про модель,
@@ -105,12 +112,12 @@ REFERRAL_DAILY_MAX = 10     # больше стольких наград в су
 PHOTO_PRICE = 50
 # Оценка присланного фото. Модель должна уметь смотреть картинки; если выдаст ошибку
 # про модель, поменяй VISION_MODEL на доступную (например grok-2-vision-1212)
-VISION_MODEL = env("VISION_MODEL", "grok-4")
+VISION_MODEL = env("VISION_MODEL", PRESET["vision"])
 RATE_PRICE = 20             # звёзд за подробный разбор внешности
 RATE_HINT_EVERY = 12        # как часто Алиса сама напоминает про оценку фото
 # Выключатели дорогих функций: пригодятся, когда надо экономить кредиты
 VISION_ENABLED = env("VISION_ENABLED", "1") == "1"      # смотреть присланные фото
-GIFT_PHOTO_ENABLED = env("GIFT_PHOTO_ENABLED", "1") == "1"   # дарить фото на 2-м сообщении
+GIFT_PHOTO_ENABLED = env("GIFT_PHOTO_ENABLED", "0" if PROVIDER != "xai" else "1") == "1"
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
 SILENT_AFTER_H = 2          # через сколько часов написать тем, кто подтвердил 18+ и не сказал ни слова
