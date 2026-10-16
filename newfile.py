@@ -2344,6 +2344,15 @@ async def deliver_photo(chat_id: int, prompt: str) -> str:
 # Фото загружает админ командой /addphoto. Это бесплатно, мгновенно и, главное,
 # лицо везде одно и то же — генерация по тексту каждый раз рисовала бы другую девушку.
 
+# Режим массовой загрузки: пока включён, каждое фото от админа падает в библиотеку.
+# Нужен для альбомов: Telegram шлёт их как отдельные сообщения, и подпись есть только у первого.
+_lib_upload: dict = {"until": 0.0, "tags": ""}
+
+
+def lib_upload_on() -> bool:
+    return time.monotonic() < _lib_upload["until"]
+
+
 async def lib_size() -> int:
     return await scalar("SELECT COUNT(*) FROM photo_lib")
 
@@ -4038,6 +4047,19 @@ async def on_photo(m: types.Message):
     uid = m.from_user.id
     u = await get_user(uid)
     L = lang_of(u)
+    # Админские команды с фото: этот обработчик стоит раньше админских, поэтому
+    # разбираем их здесь, иначе фото уйдёт в распознавание
+    if is_admin(uid):
+        cap = (m.caption or "").strip()
+        if cap.startswith("/addphoto"):
+            await _add_lib_photo(m, m.photo[-1], cap[len("/addphoto"):])
+            return
+        if cap.startswith("/setref"):
+            await _save_reference(m, m.photo[-1])
+            return
+        if lib_upload_on():
+            await _add_lib_photo(m, m.photo[-1], _lib_upload["tags"], quiet=True)
+            return
     if not VISION_ENABLED:
         await m.answer(tr(L, "photo_seen"))
         return
@@ -4354,7 +4376,8 @@ ADMIN_HELP = (
     "/flags [ID] — подозрительные сообщения\n"
     "/history ID · /payments ID\n"
     "/refund USER_ID CHARGE_ID · /broadcast текст\n"
-    "/addphoto теги — добавить фото Алисы в библиотеку (фото с подписью или ответом)\n"
+    "/addphotos [теги] — режим загрузки: кидай фото пачками, /done — закончить\n"
+    "/addphoto теги — добавить одно фото (подписью к фото или ответом)\n"
     "/photos · /delphoto_ID — библиотека фото\n"
     "/genref · /setref · /delref — эталон внешности (нужен для приветственного фото)\n"
     "/promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ — создать промокод (пример: /promoadd WELCOME 20 0 100)\n"
@@ -4584,25 +4607,27 @@ async def _save_reference(m: types.Message, photo: types.PhotoSize) -> None:
 
 
 # Фото с подписью /setref
-async def _add_lib_photo(m: types.Message, photo, tags: str) -> None:
+async def _add_lib_photo(m: types.Message, photo, tags: str, quiet: bool = False) -> None:
     """Кладёт фото в библиотеку Алисы. Теги — слова через пробел, по ним ищется фото под запрос."""
     tags = re.sub(r"\s+", " ", (tags or "").strip())[:200]
     dup = await fetch_one("SELECT id FROM photo_lib WHERE file_id=?", (photo.file_id,))
     if dup:
-        await m.answer(f"Это фото уже в библиотеке (id {dup['id']}). Всего: {await lib_size()}")
+        if not quiet:
+            await m.answer(f"Это фото уже в библиотеке (id {dup['id']}). Всего: {await lib_size()}")
         return
     cur = await execute("INSERT INTO photo_lib (file_id, tags, created_at) VALUES (?,?,?)",
                         (photo.file_id, tags, now_utc().isoformat()))
+    if quiet:   # в пачке не спамим на каждое фото, реакция вместо сообщения
+        try:
+            if ReactionTypeEmoji is not None:
+                await bot.set_message_reaction(chat_id=m.chat.id, message_id=m.message_id,
+                                               reaction=[ReactionTypeEmoji(emoji="👍")])
+        except Exception:
+            pass
+        return
     await m.answer(f"✅ Фото {cur.lastrowid} в библиотеке"
                    + (f", теги: {tags}" if tags else " (без тегов)")
                    + f"\nВсего фото: {await lib_size()}")
-
-
-@dp.message(F.photo, F.caption.regexp(r"^/addphoto"), ADMIN)
-async def adm_addphoto_caption(m: types.Message):
-    """Фото с подписью: /addphoto балкон платье вечер"""
-    tags = (m.caption or "")[len("/addphoto"):]
-    await _add_lib_photo(m, m.photo[-1], tags)
 
 
 @dp.message(Command("addphoto"), ADMIN)
@@ -4618,6 +4643,29 @@ async def adm_addphoto_reply(m: types.Message, command: CommandObject):
         "• или ответь на фото командой /addphoto теги\n\n"
         "Теги нужны, чтобы подбирать фото под запрос человека. Можно и без них.\n"
         f"Сейчас в библиотеке: {await lib_size()}")
+
+
+@dp.message(Command("addphotos"), ADMIN)
+async def adm_addphotos(m: types.Message, command: CommandObject):
+    """Массовая загрузка: включает режим, в котором каждое присланное фото идёт в библиотеку."""
+    tags = re.sub(r"\s+", " ", (command.args or "").strip())[:200]
+    _lib_upload["tags"] = tags
+    _lib_upload["until"] = time.monotonic() + 1800   # полчаса хватит на любую пачку
+    await m.answer(
+        "📥 Режим загрузки включён на 30 минут.\n\n"
+        "Кидай фото — хоть по одному, хоть альбомами, хоть пачками. Каждое уйдёт в библиотеку, "
+        "на добавленные я буду ставить 👍\n\n"
+        + (f"Теги для всей пачки: {tags}\n\n" if tags else
+           "Без тегов. Хочешь теги — /done, потом /addphotos балкон платье.\n\n")
+        + "Закончишь — отправь /done")
+
+
+@dp.message(Command("done"), ADMIN)
+async def adm_done(m: types.Message):
+    was = lib_upload_on()
+    _lib_upload["until"] = 0.0
+    await m.answer(f"Режим загрузки выключен. Всего фото: {await lib_size()}" if was
+                   else f"Режим загрузки и так выключен. Всего фото: {await lib_size()}")
 
 
 @dp.message(Command("photos"), ADMIN)
@@ -4637,11 +4685,6 @@ async def adm_delphoto(m: types.Message):
     await execute("DELETE FROM photo_lib WHERE id=?", (pid,))
     await execute("DELETE FROM photo_sent WHERE photo_id=?", (pid,))
     await m.answer(f"Удалено. Осталось: {await lib_size()}")
-
-
-@dp.message(F.photo, F.caption.startswith("/setref"), ADMIN)
-async def adm_setref_caption(m: types.Message):
-    await _save_reference(m, m.photo[-1])
 
 
 # Ответ командой /setref на сообщение с фото
