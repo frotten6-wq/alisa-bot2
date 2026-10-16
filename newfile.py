@@ -1388,6 +1388,19 @@ CREATE TABLE IF NOT EXISTS photo_rates (
     file_id TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS photo_lib (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '',
+    sent INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photo_sent (
+    user_id INTEGER NOT NULL,
+    photo_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, photo_id)
+);
 CREATE TABLE IF NOT EXISTS flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -1931,7 +1944,7 @@ async def cat_markup(uid: int, cat: str) -> InlineKeyboardMarkup:
     for k, p in PRODUCTS.items():
         if p.get("cat") != cat:
             continue
-        if p.get("photos") and not PHOTO_GEN_ENABLED:
+        if p.get("photos") and not PHOTO_GEN_ENABLED and not await lib_size():
             continue
         price = price_for(k, pct)
         label = f"{product_title(k, L)} — {price}⭐" + (f" ({tr(L, 'was', p=p['price'])})" if pct else "")
@@ -2327,9 +2340,76 @@ async def deliver_photo(chat_id: int, prompt: str) -> str:
         return "error"
 
 
+# ---------- Библиотека фото Алисы ----------
+# Фото загружает админ командой /addphoto. Это бесплатно, мгновенно и, главное,
+# лицо везде одно и то же — генерация по тексту каждый раз рисовала бы другую девушку.
+
+async def lib_size() -> int:
+    return await scalar("SELECT COUNT(*) FROM photo_lib")
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[^\W\d_]{3,}", (text or "").lower(), re.UNICODE)}
+
+
+def _tag_score(query_words: set[str], tags: str) -> int:
+    """Сколько слов запроса совпало с тегами. Сравниваем по началу слова,
+    иначе «на балконе» не найдёт тег «балкон» из-за окончания."""
+    score = 0
+    tag_words = _words(tags)
+    for q in query_words:
+        for t in tag_words:
+            if q == t or q[:4] == t[:4]:
+                score += 1
+                break
+    return score
+
+
+async def pick_lib_photo(uid: int, query: str = "") -> dict | None:
+    """Фото под запрос: сначала не показанные этому человеку, с подходящими тегами."""
+    rows = await fetch_all(
+        "SELECT p.id, p.file_id, p.tags FROM photo_lib p "
+        "WHERE p.id NOT IN (SELECT photo_id FROM photo_sent WHERE user_id=?)", (uid,))
+    if not rows:   # всё показано — начинаем круг заново, но берём самые давние
+        await execute("DELETE FROM photo_sent WHERE user_id=?", (uid,))
+        rows = await fetch_all("SELECT id, file_id, tags FROM photo_lib")
+    if not rows:
+        return None
+    qw = _words(query)
+    if qw:
+        scored = [(_tag_score(qw, r["tags"]), r) for r in rows]
+        best = max(s for s, _ in scored)
+        if best:
+            rows = [r for s, r in scored if s == best]
+    return random.choice(rows)
+
+
+async def send_lib_photo(chat_id: int, uid: int, query: str = "", caption: str | None = None) -> bool:
+    """Отправляет фото из библиотеки и запоминает, что этот человек его видел."""
+    row = await pick_lib_photo(uid, query)
+    if not row:
+        return False
+    try:
+        await bot.send_photo(chat_id, row["file_id"], caption=caption)
+    except Exception:
+        log.exception("Не удалось отправить фото из библиотеки (id=%s)", row["id"])
+        return False
+    await execute("INSERT OR IGNORE INTO photo_sent (user_id, photo_id, created_at) VALUES (?,?,?)",
+                  (uid, row["id"], now_utc().isoformat()))
+    await execute("UPDATE photo_lib SET sent = sent + 1 WHERE id=?", (row["id"],))
+    await add_to(uid, "total_photos", 1)
+    return True
+
+
 async def photo_with_credit(chat_id: int, uid: int, prompt: str, lang: str = "ru") -> None:
-    """Списываем оплаченный кредит; если генерация не удалась, кредит возвращается."""
+    """Списываем оплаченный кредит; если отправить не вышло, кредит возвращается."""
     await add_to(uid, "photo_credits", -1)
+    if await send_lib_photo(chat_id, uid, prompt):
+        return
+    if not PHOTO_GEN_ENABLED:
+        await add_to(uid, "photo_credits", 1)
+        await bot.send_message(chat_id, tr(lang, "failed_kept"))
+        return
     result = await deliver_photo(chat_id, prompt)
     if result != "ok":
         await add_to(uid, "photo_credits", 1)
@@ -2353,6 +2433,13 @@ GIFT_PHOTO_SCENES = [
 async def send_gift_photo(chat_id: int, uid: int, lang: str) -> None:
     """Одно бесплатное фото, которое Алиса присылает сама. Дальше фото только платно."""
     try:
+        if await send_lib_photo(chat_id, uid, caption=tr(lang, "gift_photo_cap")):
+            await set_fields(uid, gift_photo=1)
+            await asyncio.sleep(1.2)
+            await bot.send_message(chat_id, tr(lang, "gift_photo_more"))
+            return
+        if not PHOTO_GEN_ENABLED:
+            return
         scene = random.choice(GIFT_PHOTO_SCENES)
         async with ChatActionSender.upload_photo(bot=bot, chat_id=chat_id):
             data = await _render_photo(scene)
@@ -3667,7 +3754,8 @@ async def btn_bonus(m: types.Message):
 @dp.message(F.text.in_(btn_texts("photo")))
 async def btn_photo(m: types.Message):
     L = await ulang(m.from_user.id)
-    await m.answer(tr(L, "photo_help" if PHOTO_GEN_ENABLED else "photo_off"))
+    can = PHOTO_GEN_ENABLED or await lib_size()
+    await m.answer(tr(L, "photo_help" if can else "photo_off"))
 
 
 @dp.message(F.text.in_(btn_texts("channel")))
@@ -3736,7 +3824,7 @@ async def btn_ref(m: types.Message):
 async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
     uid = m.from_user.id
     L = lang_of(u)
-    if not PHOTO_GEN_ENABLED:
+    if not PHOTO_GEN_ENABLED and not await lib_size():
         await m.answer(tr(L, "photo_off"))
         return
     prompt = prompt or "portrait, soft smile"
@@ -3758,6 +3846,12 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
     if look:
         prompt = f"{prompt}, {look}"
     if is_admin(uid) or has_sub(u):
+        # Подписчику и админу — сразу, сначала из библиотеки
+        if await send_lib_photo(m.chat.id, uid, prompt):
+            return
+        if not PHOTO_GEN_ENABLED:
+            await m.answer(tr(L, "photo_off"))
+            return
         await m.answer(tr(L, "generating"))
         result = await deliver_photo(m.chat.id, prompt)
         if result == "refused":
@@ -4260,6 +4354,8 @@ ADMIN_HELP = (
     "/flags [ID] — подозрительные сообщения\n"
     "/history ID · /payments ID\n"
     "/refund USER_ID CHARGE_ID · /broadcast текст\n"
+    "/addphoto теги — добавить фото Алисы в библиотеку (фото с подписью или ответом)\n"
+    "/photos · /delphoto_ID — библиотека фото\n"
     "/genref · /setref · /delref — эталон внешности (нужен для приветственного фото)\n"
     "/promoadd КОД СООБЩЕНИЙ ДНЕЙ_ПОДПИСКИ ЛИМИТ — создать промокод (пример: /promoadd WELCOME 20 0 100)\n"
     "/promolist · /promodel КОД — список и удаление промокодов\n"
@@ -4488,6 +4584,61 @@ async def _save_reference(m: types.Message, photo: types.PhotoSize) -> None:
 
 
 # Фото с подписью /setref
+async def _add_lib_photo(m: types.Message, photo, tags: str) -> None:
+    """Кладёт фото в библиотеку Алисы. Теги — слова через пробел, по ним ищется фото под запрос."""
+    tags = re.sub(r"\s+", " ", (tags or "").strip())[:200]
+    dup = await fetch_one("SELECT id FROM photo_lib WHERE file_id=?", (photo.file_id,))
+    if dup:
+        await m.answer(f"Это фото уже в библиотеке (id {dup['id']}). Всего: {await lib_size()}")
+        return
+    cur = await execute("INSERT INTO photo_lib (file_id, tags, created_at) VALUES (?,?,?)",
+                        (photo.file_id, tags, now_utc().isoformat()))
+    await m.answer(f"✅ Фото {cur.lastrowid} в библиотеке"
+                   + (f", теги: {tags}" if tags else " (без тегов)")
+                   + f"\nВсего фото: {await lib_size()}")
+
+
+@dp.message(F.photo, F.caption.regexp(r"^/addphoto"), ADMIN)
+async def adm_addphoto_caption(m: types.Message):
+    """Фото с подписью: /addphoto балкон платье вечер"""
+    tags = (m.caption or "")[len("/addphoto"):]
+    await _add_lib_photo(m, m.photo[-1], tags)
+
+
+@dp.message(Command("addphoto"), ADMIN)
+async def adm_addphoto_reply(m: types.Message, command: CommandObject):
+    """Ответ командой /addphoto на сообщение с фото."""
+    src = m.reply_to_message
+    if src and src.photo:
+        await _add_lib_photo(m, src.photo[-1], command.args or "")
+        return
+    await m.answer(
+        "Как добавить фото Алисы в библиотеку:\n"
+        "• отправь фото с подписью /addphoto теги (например: /addphoto балкон платье вечер)\n"
+        "• или ответь на фото командой /addphoto теги\n\n"
+        "Теги нужны, чтобы подбирать фото под запрос человека. Можно и без них.\n"
+        f"Сейчас в библиотеке: {await lib_size()}")
+
+
+@dp.message(Command("photos"), ADMIN)
+async def adm_photos(m: types.Message):
+    total = await lib_size()
+    if not total:
+        await m.answer("Библиотека пуста. Добавить: /addphoto")
+        return
+    rows = await fetch_all("SELECT id, tags, sent FROM photo_lib ORDER BY id DESC LIMIT 40")
+    lines = [f"/delphoto_{r['id']} · отправлено {r['sent']} · {r['tags'] or 'без тегов'}" for r in rows]
+    await send_long(m, f"🖼 Фото в библиотеке: {total}\n\n" + "\n".join(lines))
+
+
+@dp.message(F.text.regexp(r"^/delphoto_\d+"), ADMIN)
+async def adm_delphoto(m: types.Message):
+    pid = int(m.text.split("_", 1)[1].split()[0])
+    await execute("DELETE FROM photo_lib WHERE id=?", (pid,))
+    await execute("DELETE FROM photo_sent WHERE photo_id=?", (pid,))
+    await m.answer(f"Удалено. Осталось: {await lib_size()}")
+
+
 @dp.message(F.photo, F.caption.startswith("/setref"), ADMIN)
 async def adm_setref_caption(m: types.Message):
     await _save_reference(m, m.photo[-1])
