@@ -75,7 +75,7 @@ VOICE_ENABLED = bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)
 VOICE_PRICE = 20            # звёзд за одно голосовое для тех, у кого нет подписки
 VOICE_MAX_CHARS = int(env("VOICE_MAX_CHARS", "300"))   # длиннее обрезаем, чтобы не тратить символы
 VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
-FREE_VOICES = 2             # бесплатных озвучек каждому новому пользователю
+FREE_VOICES = 1             # бесплатных озвучек каждому новому пользователю
 VOICE_FREE_AFTER = int(env("VOICE_FREE_AFTER", "5"))   # бесплатные озвучки открываются после N сообщений
 VOICE_DAILY_TOTAL = int(env("VOICE_DAILY_TOTAL", "150"))  # общий лимит бесплатных озвучек на бота в сутки
 VOICE_IN_MAX_SEC = 60       # голосовые пользователя длиннее этого не распознаём
@@ -331,6 +331,16 @@ TX = {
                    "de": "👥 Ein Freund hat's geschickt"},
     "src_search": {"ru": "🔍 Искал сам", "en": "🔍 Searched for it", "de": "🔍 Selbst gesucht"},
     "src_other": {"ru": "🤷 Не помню", "en": "🤷 Don't remember", "de": "🤷 Weiß nicht mehr"},
+    # --- подарочное фото ---
+    "gift_photo_cap": {"ru": "Кстати, только что сняла. Держи 😊",
+                       "en": "By the way, just took this. Here you go 😊",
+                       "de": "Übrigens, gerade gemacht. Hier für dich 😊"},
+    "gift_photo_more": {"ru": "Если захочешь ещё — напиши «фото» и опиши, где я и во что одета. "
+                              "Пару штук есть в 🛒 Магазине, и подписчикам я их шлю чаще 😉",
+                        "en": "Want more? Write «photo» and describe where I am and what I'm wearing. "
+                              "There are packs in the 🛒 Shop, and I send them more often to subscribers 😉",
+                        "de": "Willst du mehr? Schreib «Foto» und beschreib, wo ich bin und was ich trage. "
+                              "Pakete gibt's im 🛒 Shop, Abonnenten bekommen sie öfter 😉"},
     "src_thanks": {"ru": "Ага, поняла 🙂 Ладно, продолжаем.",
                    "en": "Got it 🙂 Okay, where were we.",
                    "de": "Alles klar 🙂 Gut, wo waren wir."},
@@ -1372,6 +1382,7 @@ NEW_COLS = {
     "custom_unlocked": "INTEGER NOT NULL DEFAULT 0",
     "awaiting_nick": "INTEGER NOT NULL DEFAULT 0",
     "source_asked": "INTEGER NOT NULL DEFAULT 0",
+    "gift_photo": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -1382,7 +1393,7 @@ USER_FIELDS = {
     "total_msgs", "total_photos", "total_voices", "tz_offset", "last_morning", "expiry_notified",
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
     "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
-    "custom", "custom_unlocked", "awaiting_nick", "source_asked",
+    "custom", "custom_unlocked", "awaiting_nick", "source_asked", "gift_photo",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -2230,6 +2241,33 @@ async def photo_with_credit(chat_id: int, uid: int, prompt: str, lang: str = "ru
             await bot.send_message(chat_id, tr(lang, "refused") + tr(lang, "refused_kept"))
         else:
             await bot.send_message(chat_id, tr(lang, "failed_kept"))
+
+
+GIFT_PHOTO_AFTER = 2        # после скольких сообщений Алиса сама присылает одно фото
+# Сцены для подарочного фото: обычные, «инстаграмные», без намёка на откровенность
+GIFT_PHOTO_SCENES = [
+    "sitting by the window with a cup of coffee, soft daylight",
+    "on a balcony at sunset, light summer dress",
+    "in a cosy sweater on the sofa, warm lamp light",
+    "walking in a park in autumn, scarf and coat",
+    "in a cafe by the window, casual outfit, smiling",
+]
+
+
+async def send_gift_photo(chat_id: int, uid: int, lang: str) -> None:
+    """Одно бесплатное фото, которое Алиса присылает сама. Дальше фото только платно."""
+    try:
+        scene = random.choice(GIFT_PHOTO_SCENES)
+        async with ChatActionSender.upload_photo(bot=bot, chat_id=chat_id):
+            data = await _render_photo(scene)
+        await bot.send_photo(chat_id, BufferedInputFile(data, "alisa.jpg"),
+                             caption=tr(lang, "gift_photo_cap"))
+        await add_to(uid, "total_photos", 1)
+        await set_fields(uid, gift_photo=1)   # отмечаем только после успешной отправки
+        await asyncio.sleep(1.2)
+        await bot.send_message(chat_id, tr(lang, "gift_photo_more"))
+    except Exception:
+        log.exception("Не удалось отправить подарочное фото")
 
 
 async def send_welcome_photo(chat_id: int, lang: str = "ru", reply_markup=None) -> bool:
@@ -3660,6 +3698,12 @@ async def chat_core(m: types.Message, text: str) -> None:
             spawn(update_memory(uid))
         if u.get("referrer") and not u.get("ref_rewarded"):
             spawn(reward_referrer(await get_user(uid)))
+
+        # Одно фото в подарок тем, кто начал разговор: человек из рекламы ждёт именно этого,
+        # а на вопрос «как тебя зовут» уходит. Шлём один раз и дальше только платно.
+        if (not u.get("gift_photo") and (u.get("total_msgs") or 0) + 1 >= GIFT_PHOTO_AFTER
+                and not admin):
+            spawn(send_gift_photo(m.chat.id, uid, L))
 
         # Если метки в ссылке не было, Алиса сама спрашивает, откуда человек пришёл.
         # Спрашиваем один раз, после нескольких сообщений, когда разговор уже завязался.
