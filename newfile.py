@@ -1449,6 +1449,12 @@ async def migrate() -> None:
     pcols = {r["name"] for r in await fetch_all("PRAGMA table_info(channel_posts)")}
     if "lang" not in pcols:
         await db.execute("ALTER TABLE channel_posts ADD COLUMN lang TEXT NOT NULL DEFAULT 'ru'")
+    # Бесплатных озвучек стало меньше: срезаем остаток у тех, кому досталось больше нормы.
+    # Только вниз — у кого уже 0, ничего не прибавляем.
+    cur = await db.execute("UPDATE users SET free_voices=? WHERE free_voices>?",
+                           (FREE_VOICES, FREE_VOICES))
+    if cur.rowcount:
+        log.info("Бесплатные озвучки срезаны до %s у %s пользователей", FREE_VOICES, cur.rowcount)
     await db.commit()
 
 
@@ -1477,7 +1483,11 @@ def cost_usd(u: dict[str, float]) -> tuple[float, float]:
 
 async def get_user(uid: int) -> dict:
     ts = now_utc().isoformat()
-    await db.execute("INSERT OR IGNORE INTO users (id, created_at, last_seen) VALUES (?,?,?)", (uid, ts, ts))
+    # free_voices задаём явно: значение по умолчанию зашито в таблицу при её создании,
+    # и смена константы FREE_VOICES сама по себе на уже существующую базу не влияет
+    await db.execute(
+        "INSERT OR IGNORE INTO users (id, created_at, last_seen, free_voices) VALUES (?,?,?,?)",
+        (uid, ts, ts, FREE_VOICES))
     await db.execute("UPDATE users SET last_seen=? WHERE id=?", (ts, uid))
     await db.commit()
     return await fetch_one("SELECT * FROM users WHERE id=?", (uid,))
