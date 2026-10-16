@@ -232,7 +232,10 @@ PERSONA = (
     "- Как в мессенджере: коротко, 1-3 предложения, иногда одно слово. Без канцелярита.\n"
     "- Бери инициативу: рассказывай о своём дне и мыслях, делись мнением, шути, предлагай тему или игру "
     "(«давай так: ты мне три факта о себе, один враньё»). Не превращай разговор в допрос.\n"
-    "- Тебе правда интересен собеседник: примерно в половине ответов задавай встречный вопрос о нём, "
+    "- Не превращай переписку в допрос: встречный вопрос уместен примерно в каждом третьем ответе, "
+    "не чаще. В остальных просто живо отреагируй, пошути или расскажи что-то своё — без вопроса в конце. "
+    "Два вопроса подряд недопустимы.\n"
+    "- Когда вопрос всё же задаёшь, он должен быть о собеседнике, "
     "конкретный и живой (про его день, планы, вкусы, то, что он рассказал раньше). Если разговор затухает, "
     "сама предлагай новую тему, игру или делись случаем из своего дня. Никогда не повторяй один и тот же "
     "вопрос подряд и не используй дежурные фразы вроде «что у тебя на уме?».\n"
@@ -869,6 +872,100 @@ TX = {
               "Abonnenten: Tippe im Bot auf «📢 Kanal» → «Ich habe abonniert» und hol dir +{bonus} Nachrichten.\n\n"
               "Ich bin eine KI-Gesprächspartnerin. 18+"},
 }
+
+# Приветствия при входе в режим. Берётся случайное: один и тот же текст у всех
+# сразу выдаёт шаблон, а это первое, что человек видит от Алисы в новом режиме.
+INTROS = {
+    "chat": {
+        "ru": ["Окей, просто болтаем 🙂 Я как раз сделала себе кофе. Как твой день?",
+               "Всё, никаких сценариев, просто разговор. Чем занимался сегодня?",
+               "Люблю такие разговоры ни о чём. Рассказывай, что у тебя происходит?",
+               "Так, теперь спокойно поболтаем. Ты вообще как?",
+               "Отлично, я как раз залезла под плед. Что у тебя нового?"],
+        "en": ["Okay, just chatting 🙂 I've just made myself a coffee. How's your day?",
+               "No scripts, just talking. What have you been up to today?",
+               "I like these random conversations. Tell me what's going on with you?",
+               "Alright, let's just talk. How are you, really?",
+               "Perfect, I've just curled up under a blanket. What's new with you?"],
+        "de": ["Okay, wir plaudern einfach 🙂 Ich hab mir gerade einen Kaffee gemacht. Wie war dein Tag?",
+               "Kein Drehbuch, einfach reden. Was hast du heute gemacht?",
+               "Ich mag solche Gespräche über nichts. Erzähl, was ist bei dir los?",
+               "Gut, reden wir einfach. Wie geht es dir wirklich?",
+               "Super, ich hab mich gerade unter die Decke gekuschelt. Was gibt's Neues?"]},
+    "chat_f": {
+        "ru": ["Окей, просто болтаем 🙂 Рассказывай, что у тебя нового?",
+               "Ура, посплетничаем! Как ты вообще?",
+               "Обожаю такие разговоры. Ну, что нового?",
+               "Так, садись поудобнее. Выкладывай, что происходит?",
+               "Наконец-то спокойно поговорим. Как дела-то?"],
+        "en": ["Okay, just chatting 🙂 Tell me, what's new with you?",
+               "Yay, girl talk! How are you doing?",
+               "I love these conversations. So, what's new?",
+               "Alright, get comfortable. Tell me what's going on?",
+               "Finally, a proper talk. How have you been?"],
+        "de": ["Okay, wir plaudern einfach 🙂 Erzähl, was gibt's Neues?",
+               "Juhu, Mädelsgespräch! Wie geht's dir?",
+               "Ich liebe solche Gespräche. Also, was gibt's Neues?",
+               "So, mach's dir bequem. Erzähl, was ist los?",
+               "Endlich mal richtig reden. Wie läuft's bei dir?"]},
+    "support": {
+        "ru": ["Я рядом. Можешь рассказать, что на душе, я внимательно слушаю 🤍",
+               "Я здесь. Не надо начинать с главного, говори как получится 🤍",
+               "Давай выдохнем. Расскажи, что тебя сейчас гложет?",
+               "Я никуда не спешу. Что случилось?",
+               "Ты можешь говорить что угодно, я не буду осуждать 🤍"],
+        "en": ["I'm here. Tell me what's on your mind, I'm listening 🤍",
+               "I'm right here. You don't have to start with the hard part 🤍",
+               "Let's take a breath. What's weighing on you?",
+               "I'm in no hurry. What happened?",
+               "You can say anything, I won't judge 🤍"],
+        "de": ["Ich bin da. Erzähl mir, was dich bewegt, ich höre zu 🤍",
+               "Ich bin hier. Du musst nicht mit dem Schwersten anfangen 🤍",
+               "Atmen wir kurz durch. Was belastet dich?",
+               "Ich hab Zeit. Was ist passiert?",
+               "Du kannst alles sagen, ich verurteile nichts 🤍"]},
+    "evening": {
+        "ru": ["Вечер, плед, приглушённый свет… Как хорошо, что ты пришёл 🌙",
+               "Я как раз думала, чем себя занять. А тут ты 🌙",
+               "Тихий вечер, и наконец-то никуда не надо. Садись ближе.",
+               "Знаешь, я ждала, что ты напишешь именно сегодня 🌙",
+               "За окном уже темно, а у меня только одна свеча горит. Уютно."],
+        "en": ["Evening, a blanket, dim lights… So glad you came 🌙",
+               "I was just wondering what to do with myself. And here you are 🌙",
+               "A quiet evening and nowhere to be. Come closer.",
+               "You know, I had a feeling you'd write tonight 🌙",
+               "It's dark outside and I've got one candle burning. Cosy."],
+        "de": ["Abend, eine Decke, gedimmtes Licht… Schön, dass du da bist 🌙",
+               "Ich hab mich gerade gefragt, was ich machen soll. Und da bist du 🌙",
+               "Ein ruhiger Abend und nirgendwo hin müssen. Komm näher.",
+               "Weißt du, ich hatte das Gefühl, du schreibst heute 🌙",
+               "Draußen ist es dunkel und bei mir brennt nur eine Kerze. Gemütlich."]},
+    "spicy": {
+        "ru": ["Ммм, решил сделать вечер поинтереснее? Я не против 😉",
+               "О, вот это поворот. Мне нравится, куда ты клонишь 😏",
+               "Ты уверен, что готов? Я сегодня в настроении 😏",
+               "Наконец-то. Я всё ждала, когда ты решишься 😉",
+               "Смелый. Посмотрим, надолго ли тебя хватит 😏"],
+        "en": ["Mmm, decided to make the evening more interesting? I don't mind 😉",
+               "Oh, now we're talking. I like where you're going 😏",
+               "You sure you're ready? I'm in the mood tonight 😏",
+               "Finally. I was waiting for you to make up your mind 😉",
+               "Bold. Let's see how long you last 😏"],
+        "de": ["Mmm, willst du den Abend spannender machen? Ich hab nichts dagegen 😉",
+               "Oh, jetzt wird's interessant. Mir gefällt, worauf du hinauswillst 😏",
+               "Bist du sicher, dass du bereit bist? Ich bin heute in Stimmung 😏",
+               "Endlich. Ich hab gewartet, bis du dich traust 😉",
+               "Mutig. Mal sehen, wie lange du durchhältst 😏"]},
+}
+
+
+def pick_intro(key: str, lang: str) -> str:
+    """Случайное приветствие режима, с откатом на старый текст."""
+    variants = INTROS.get(key, {}).get(lang) or INTROS.get(key, {}).get("ru")
+    if variants:
+        return random.choice(variants)
+    return tr(lang, "intro_" + key)
+
 
 # Запасные тексты, если у человека ещё нет заметки в памяти
 NUDGES = {
@@ -2973,7 +3070,7 @@ async def cb_mode(c: types.CallbackQuery):
     except Exception:
         pass
     await c.answer(scen_label(key, L))
-    intro = tr(L, "intro_chat_f" if key == "chat" and u.get("gender") == "f" else "intro_" + key)
+    intro = pick_intro("chat_f" if key == "chat" and u.get("gender") == "f" else key, L)
     await add_assistant_msg(uid, intro)
     await c.message.answer(intro + (premium_note(u, L) if key in PREMIUM_MODES else ""))
 
