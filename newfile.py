@@ -94,6 +94,8 @@ STREAK_STEP = 2             # на сколько растёт награда з
 STREAK_MAX_DAYS = 7         # после скольких дней награда перестаёт расти
 REFERRAL_REWARD = 10
 REFERRAL_MAX = 30           # максимум наград за приглашения на одного пользователя
+REFERRAL_AFTER_MSGS = 3     # приглашённый должен столько написать, иначе награды нет
+REFERRAL_DAILY_MAX = 10     # больше стольких наград в сутки одному человеку не даём
 PHOTO_PRICE = 50
 FLOOD_SECONDS = 0.8
 NUDGE_AFTER_H = 24          # через сколько часов тишины Алиса пишет первой (один раз за период тишины)
@@ -2249,6 +2251,32 @@ async def remember_gift(uid: int, gift: str) -> None:
         log.exception("Не удалось запомнить подарок")
 
 
+async def reward_referrer(u: dict) -> None:
+    """Награда пригласителю: только когда приглашённый реально начал общаться.
+    Защита от накрутки: нужен живой диалог, лимит наград в сутки и общий потолок."""
+    ref = u.get("referrer")
+    if not ref or u.get("ref_rewarded") or (u.get("total_msgs") or 0) < REFERRAL_AFTER_MSGS:
+        return
+    uid = u["id"]
+    await set_fields(uid, ref_rewarded=1)   # помечаем сразу, чтобы не выдать дважды
+    total = await scalar("SELECT COUNT(*) FROM users WHERE referrer=? AND ref_rewarded=1", (ref,))
+    if total > REFERRAL_MAX:
+        return
+    day = (now_utc() - timedelta(hours=24)).isoformat()
+    today = await scalar(
+        "SELECT COUNT(*) FROM users WHERE referrer=? AND ref_rewarded=1 AND created_at > ?",
+        (ref, day))
+    if today > REFERRAL_DAILY_MAX:
+        await tell_admin(f"⚠️ Подозрение на накрутку рефералов: /u_{ref} привёл {today} человек за сутки", ref)
+        return
+    await add_to(ref, "bonus_msgs", REFERRAL_REWARD)
+    try:
+        rl = await ulang(ref)
+        await bot.send_message(ref, tr(rl, "ref_reward", n=REFERRAL_REWARD))
+    except Exception:
+        pass
+
+
 async def update_memory(uid: int) -> None:
     """Фоновое обновление короткой заметки о собеседнике («долгая память»)."""
     try:
@@ -2635,17 +2663,8 @@ async def age_cb(c: types.CallbackQuery):
             if u["referrer"]:
                 text += f"\nПришёл от /u_{u['referrer']}"
             await tell_admin(text, uid)
-        if u["referrer"] and not u["ref_rewarded"]:
-            rewarded = await scalar(
-                "SELECT COUNT(*) FROM users WHERE referrer=? AND ref_rewarded=1", (u["referrer"],))
-            await set_fields(uid, ref_rewarded=1)
-            if rewarded < REFERRAL_MAX:
-                await add_to(u["referrer"], "bonus_msgs", REFERRAL_REWARD)
-                try:
-                    rl = await ulang(u["referrer"])
-                    await bot.send_message(u["referrer"], tr(rl, "ref_reward", n=REFERRAL_REWARD))
-                except Exception:
-                    pass
+        # Награда за приглашение выдаётся не здесь, а после REFERRAL_AFTER_MSGS сообщений
+        # приглашённого: иначе достаточно создать аккаунт и нажать одну кнопку.
         try:
             await c.message.edit_reply_markup(reply_markup=None)
         except Exception:
@@ -3494,6 +3513,8 @@ async def chat_core(m: types.Message, text: str) -> None:
                           (today, uid))
         if u["since_summary"] + 1 >= SUMMARY_EVERY:
             spawn(update_memory(uid))
+        if u.get("referrer") and not u.get("ref_rewarded"):
+            spawn(reward_referrer(await get_user(uid)))
 
         await send_human(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
 
