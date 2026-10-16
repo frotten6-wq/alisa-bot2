@@ -923,16 +923,6 @@ TX = {
     "reason_topic": {"ru": "недопустимая тема", "en": "unacceptable topic", "de": "unzulässiges Thema"},
     "reason_rules": {"ru": "нарушение правил", "en": "rule violation", "de": "Regelverstoß"},
     # --- обновление ---
-    "update_text": {
-        "ru": "✨ Я обновилась!\n\nНажми «🎭 Режимы» внизу: можно выбрать, как общаться — просто поболтать, "
-              "поддержка, когда одиноко, ролевые игры (можно придумать свой сюжет). А ещё теперь можно выбрать язык: "
-              "/language\n\nНаш разговор я помню, продолжаем 🙂",
-        "en": "✨ I've been updated!\n\nTap «🎭 Modes» below to choose how we talk: just chatting, support when "
-              "you feel lonely, roleplay (you can make up your own story). You can also change the language: "
-              "/language\n\nI remember our chat, let's continue 🙂",
-        "de": "✨ Ich habe ein Update bekommen!\n\nTippe unten auf «🎭 Modi» und wähle, wie wir schreiben: einfach "
-              "plaudern, Unterstützung, wenn du dich einsam fühlst, Rollenspiele (auch mit eigener Geschichte). "
-              "Die Sprache kannst du auch ändern: /language\n\nUnser Gespräch weiß ich noch, machen wir weiter 🙂"},
     "channel_hello": {
         "ru": "Привет, я Алиса 👋\n\nМне 23, я люблю долгие разговоры по вечерам и узнавать новых людей. "
               "Здесь мои фото, новости и подарки для подписчиков.\n\nСо мной можно поболтать в личке: я помню, "
@@ -4225,7 +4215,7 @@ ADMIN = F.from_user.id == ADMIN_ID
 ADMIN_HELP = (
     "Админ-команды:\n"
     "/stats — сводка\n"
-    "/users [стр] — все пользователи, новые сверху\n"
+    "/users — пользователи по разделам: платили, писали, не писали (кнопки внизу)\n"
     "/active — недавно активные\n"
     "/user ID или @ник — профиль с кнопками (в списках тапай на /u_ID)\n"
     "/sub ID ДНИ — выдать подписку (0 — снять)\n"
@@ -4241,7 +4231,7 @@ ADMIN_HELP = (
     "/promolist · /promodel КОД — список и удаление промокодов\n"
     "/post [en|de] [тема] — черновик поста в канал с фото (публикуется только по кнопке)\n"
     "/chanhello [en|de] — опубликовать и закрепить приветственный пост в канале\n"
-    "/update [текст] — разослать всем новое меню и сообщение об обновлении\n\n"
+    "/update текст — разослать всем новое меню и сообщение об обновлении\n\n"
     "Аналитика:\n"
     "/funnel [дней] — воронка: где отваливаются люди\n"
     "/sources [дней] — откуда приходят (метки ссылок t.me/бот?start=метка)\n"
@@ -4702,20 +4692,70 @@ async def adm_stats(m: types.Message):
         f"Источники ссылок: /sources")
 
 
+# Разделы списка пользователей: ключ -> (название, условие WHERE, порядок)
+USER_GROUPS = {
+    "all":    ("👥 Все", "1=1", "created_at DESC"),
+    "paid":   ("💳 Платили",
+               "id IN (SELECT user_id FROM payments WHERE refunded=0)", "created_at DESC"),
+    "talked": ("💬 Писали", "total_msgs > 0", "total_msgs DESC"),
+    "silent": ("🙊 Не писали", "total_msgs = 0 AND adult = 1", "created_at DESC"),
+    "wall":   ("💸 Упёрлись в лимит", "messages >= 20", "total_msgs DESC"),
+    "back":   ("🔁 Вернулись", "active_days >= 2", "active_days DESC"),
+}
+USERS_PER_PAGE = 15
+
+
+async def group_counts() -> dict[str, int]:
+    return {k: await scalar(f"SELECT COUNT(*) FROM users WHERE {cond}")
+            for k, (_, cond, _) in USER_GROUPS.items()}
+
+
+async def users_page(group: str, page: int = 1) -> tuple[str, InlineKeyboardMarkup]:
+    """Страница одного раздела плюс кнопки переключения между разделами."""
+    title, cond, order = USER_GROUPS.get(group, USER_GROUPS["all"])
+    total = await scalar(f"SELECT COUNT(*) FROM users WHERE {cond}")
+    pages = max(1, (total + USERS_PER_PAGE - 1) // USERS_PER_PAGE)
+    page = max(1, min(page, pages))
+    rows = await fetch_all(
+        f"SELECT * FROM users WHERE {cond} ORDER BY {order} LIMIT ? OFFSET ?",
+        (USERS_PER_PAGE, (page - 1) * USERS_PER_PAGE))
+    body = "\n".join(user_line(r) for r in rows) or "Тут пока пусто"
+    counts = await group_counts()
+    head = f"{title} · {total} чел. · страница {page}/{pages}"
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="← Назад", callback_data=f"ulist:{group}:{page - 1}"))
+    if page < pages:
+        nav.append(InlineKeyboardButton(text="Вперёд →", callback_data=f"ulist:{group}:{page + 1}"))
+    kb = [nav] if nav else []
+    # Переключатели разделов: по два в ряд, с количеством людей на кнопке
+    tabs = [InlineKeyboardButton(text=("· " if k == group else "") + f"{name} {counts[k]}",
+                                 callback_data=f"ulist:{k}:1")
+            for k, (name, _, _) in USER_GROUPS.items()]
+    kb += [tabs[i:i + 2] for i in range(0, len(tabs), 2)]
+    return f"{head}\n\n{body}\n\n{USERS_LEGEND}", InlineKeyboardMarkup(inline_keyboard=kb)
+
+
 @dp.message(Command("users"), ADMIN)
 async def adm_users(m: types.Message, command: CommandObject):
-    arg = (command.args or "").strip()
-    page = max(1, int(arg)) if arg.isdigit() else 1
-    per = 15
-    total = await scalar("SELECT COUNT(*) FROM users")
-    pages = max(1, (total + per - 1) // per)
-    rows = await fetch_all("SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?", (per, (page - 1) * per))
-    if not rows:
-        await m.answer("Нет пользователей")
-        return
-    text = "\n".join(user_line(r) for r in rows)
-    footer = f"\n\nСтраница {page}/{pages}" + (f", дальше: /users {page + 1}" if page < pages else "")
-    await m.answer(f"Пользователи (новые сверху):\n{text}{footer}\n\n{USERS_LEGEND}")
+    arg = (command.args or "").strip().lower()
+    group = arg if arg in USER_GROUPS else "all"
+    text, kb = await users_page(group, 1)
+    await m.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("ulist:"), ADMIN)
+async def cb_users(c: types.CallbackQuery):
+    parts = c.data.split(":")
+    group = parts[1] if len(parts) > 1 and parts[1] in USER_GROUPS else "all"
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    text, kb = await users_page(group, page)
+    try:
+        await c.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await c.message.answer(text, reply_markup=kb)
+    await c.answer()
 
 
 @dp.message(Command("active"), ADMIN)
@@ -4979,22 +5019,61 @@ async def adm_refund(m: types.Message, command: CommandObject):
         await m.answer(f"Ошибка возврата: {e}")
 
 
+async def translate_update(text: str) -> dict[str, str]:
+    """Переводит текст рассылки на языки бота. Если перевод не вышел, шлём как есть."""
+    out = {"ru": text}
+    for L in ("en", "de"):
+        try:
+            r = await llm.chat.completions.create(
+                model=CHAT_MODEL_FREE, temperature=0.3,
+                messages=[{"role": "system", "content":
+                           "You translate a short message from a chat companion bot to its users. "
+                           f"Translate into {'English' if L == 'en' else 'German'}. Keep the tone, "
+                           "emoji and line breaks. Output only the translation."},
+                          {"role": "user", "content": text}])
+            out[L] = (r.choices[0].message.content or "").strip() or text
+        except Exception:
+            log.exception("Не удалось перевести текст рассылки на %s", L)
+            out[L] = text
+    return out
+
+
 @dp.message(Command("update"), ADMIN)
 async def adm_update(m: types.Message, command: CommandObject):
-    """Рассылает всем новое меню кнопок (оно само не обновляется) и короткое сообщение на их языке."""
-    custom = (command.args or "").strip()
+    """Рассылает новость об обновлении на языке каждого человека и заодно обновляет меню кнопок
+    (само оно не обновляется). Текст каждый раз свой: заранее заготовленного больше нет."""
+    text = (command.args or "").strip()
+    async with db.execute("SELECT value FROM kv WHERE key='last_update_text'") as cur:
+        row = await cur.fetchone()
+    last = (bytes(row[0]).decode() if row and row[0] else "")
+    if not text:
+        hint = f"\n\nПрошлая рассылка была такой:\n«{last[:300]}»" if last else ""
+        await m.answer("Использование: /update текст новости\n\n"
+                       "Текст уйдёт всем подтвердившим 18+ на их языке (перевод автоматический) "
+                       "и обновит меню кнопок." + hint)
+        return
+    if text == last:
+        await m.answer("Такой текст уже рассылался в прошлый раз. "
+                       "Напиши что-то новое или повтори команду с любым изменением.")
+        return
+
+    await m.answer("Перевожу текст…")
+    texts = await translate_update(text)
+    preview = "\n\n".join(f"[{L}] {t}" for L, t in texts.items())
     rows = await fetch_all("SELECT id, lang FROM users WHERE banned=0 AND adult=1")
-    await m.answer(f"Рассылаю обновление {len(rows)} пользователям...")
+    await m.answer(f"{preview}\n\nРассылаю {len(rows)} пользователям…")
     ok = fail = 0
     for r in rows:
         try:
             L = lang_of(r)
-            await bot.send_message(r["id"], custom or tr(L, "update_text"), reply_markup=main_kb(L),
+            await bot.send_message(r["id"], texts.get(L, text), reply_markup=main_kb(L),
                                    disable_notification=True)
             ok += 1
         except Exception:
             fail += 1
         await asyncio.sleep(0.05)
+    await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('last_update_text', ?)",
+                  (text.encode(),))
     await m.answer(f"Готово. Доставлено: {ok}, не доставлено (заблокировали бота и т.п.): {fail}")
 
 
