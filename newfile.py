@@ -5616,16 +5616,33 @@ async def make_post_draft(topic: str, lang: str = "ru") -> tuple[str, bytes]:
     text = text.strip('"«»')[:800]
     if not prompt_allowed(scene) or _SEXUAL_RE.search(scene) or photo_block_reason(scene):
         scene = "cozy home, casual outfit, soft natural light"
-    ref = await get_reference()
-    photo = None
-    if ref:
+    return text, await post_photo(scene)
+
+
+async def post_photo(scene: str) -> bytes:
+    """Картинка для поста. Сначала генерация (если она вообще включена и жива),
+    иначе берём подходящее фото из библиотеки Алисы — это бесплатно."""
+    if PHOTO_GEN_ENABLED:
+        ref = await get_reference()
+        if ref:
+            try:
+                return await edit_image(build_edit_prompt(scene + ", tasteful, fully clothed"), ref)
+            except Exception:
+                log.exception("Пост: генерация по референсу не удалась")
         try:
-            photo = await edit_image(build_edit_prompt(scene + ", tasteful, fully clothed"), ref)
+            return await gen_image(f"{APPEARANCE}, {scene}, tasteful, fully clothed, photorealistic")
         except Exception:
-            log.exception("Пост: генерация по референсу не удалась")
-    if photo is None:
-        photo = await gen_image(f"{APPEARANCE}, {scene}, tasteful, fully clothed, photorealistic")
-    return text, photo
+            log.exception("Пост: генерация не удалась, берём фото из библиотеки")
+    row = await pick_lib_photo(ADMIN_ID, scene)
+    if not row:
+        raise RuntimeError("Генерация картинок недоступна, а библиотека фото пуста. "
+                           "Залей фото командой /addphotos и повтори.")
+    buf = await bot.download(row["file_id"])
+    # Отмечаем, что это фото уже уходило в пост, чтобы посты не повторялись
+    await execute("INSERT OR IGNORE INTO photo_sent (user_id, photo_id, created_at) VALUES (?,?,?)",
+                  (ADMIN_ID, row["id"], now_utc().isoformat()))
+    await execute("UPDATE photo_lib SET sent = sent + 1 WHERE id=?", (row["id"],))
+    return buf.read()
 
 
 def post_kb(pid: int) -> InlineKeyboardMarkup:
@@ -5657,7 +5674,7 @@ async def send_post_draft(topic: str, lang: str = "ru") -> None:
         return
     except Exception as e:
         log.exception("Ошибка подготовки поста")
-        await bot.send_message(ADMIN_ID, f"Не получилось подготовить пост: {type(e).__name__}: {e}")
+        await bot.send_message(ADMIN_ID, f"Не получилось подготовить пост: {type(e).__name__}: {str(e)[:300]}")
         return
     cur = await execute("INSERT INTO channel_posts (topic, text, photo, lang, created_at) VALUES (?,?,?,?,?)",
                         (topic, text, photo, lang, now_utc().isoformat()))
