@@ -2953,6 +2953,19 @@ async def make_proactive(r: dict, instruction: str, fallbacks: dict[str, list[st
     return text
 
 
+async def mute_if_blocked(uid: int, e: Exception) -> None:
+    """Если человек заблокировал бота, снимаем ему notify: больше не пишем первыми.
+
+    Иначе мы каждый раз тратим запрос к модели на текст, который всё равно
+    не дойдёт, — а бесплатная квота Gemini не резиновая."""
+    if "forbidden" in type(e).__name__.lower() or "blocked" in str(e).lower():
+        try:
+            await set_fields(uid, notify=0)
+            log.info("Пользователь %s заблокировал бота — больше не пишем первыми", uid)
+        except Exception:
+            log.exception("Не удалось снять notify у %s", uid)
+
+
 def local_now(tz_offset: int | None) -> datetime:
     return now_utc() + timedelta(hours=DEFAULT_TZ if tz_offset is None else tz_offset)
 
@@ -2978,8 +2991,8 @@ async def nudge_loop() -> None:
                 text = await make_proactive(r, "Ты сама пишешь первой после долгой паузы.", NUDGES)
                 try:
                     await bot.send_message(r["id"], text + tr(lang_of(r), "notify_hint"))
-                except Exception:
-                    pass  # пользователь заблокировал бота и т.п.
+                except Exception as e:
+                    await mute_if_blocked(r["id"], e)
                 await set_fields(r["id"], last_nudge=now_utc().isoformat())
                 sent += 1
                 await asyncio.sleep(0.1)
@@ -2998,8 +3011,8 @@ async def nudge_loop() -> None:
                 text = random.choice(SILENT.get(lang_of(r)) or SILENT["ru"])
                 try:
                     await bot.send_message(r["id"], text + tr(lang_of(r), "notify_hint"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    await mute_if_blocked(r["id"], e)
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -3027,8 +3040,8 @@ async def morning_loop() -> None:
                 text = await make_proactive(r, "Ты пишешь первой, чтобы пожелать доброго утра.", MORNINGS)
                 try:
                     await bot.send_message(r["id"], text + tr(lang_of(r), "notify_hint"))
-                except Exception:
-                    pass
+                except Exception as e:
+                    await mute_if_blocked(r["id"], e)
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -3053,8 +3066,8 @@ async def expiry_loop() -> None:
                 try:
                     await bot.send_message(r["id"], tr(lang_of(r), "expiry", d=fmt_dt(until)),
                                            reply_markup=await shop_markup(r["id"]))
-                except Exception:
-                    pass
+                except Exception as e:
+                    await mute_if_blocked(r["id"], e)
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -3173,7 +3186,8 @@ dp.callback_query.outer_middleware(guard)
 @dp.error()
 async def on_error(event: ErrorEvent):
     log.error("Необработанная ошибка: %s", event.exception, exc_info=event.exception)
-    if type(event.exception).__name__ in ("TelegramNetworkError", "TelegramRetryAfter", "TelegramServerError"):
+    if type(event.exception).__name__ in ("TelegramNetworkError", "TelegramRetryAfter", "TelegramServerError",
+                                            "TelegramForbiddenError"):
         return True  # разовые сбои связи с Telegram — не беспокоим админа
     await notify_admin(f"Необработанная ошибка: {type(event.exception).__name__}: {event.exception}", "unhandled")
     return True
@@ -5581,8 +5595,9 @@ async def adm_update(m: types.Message, command: CommandObject):
             await bot.send_message(r["id"], texts.get(L, text), reply_markup=main_kb(L),
                                    disable_notification=True)
             ok += 1
-        except Exception:
+        except Exception as e:
             fail += 1
+            await mute_if_blocked(r["id"], e)
         await asyncio.sleep(0.05)
     await execute("INSERT OR REPLACE INTO kv (key, value) VALUES ('last_update_text', ?)",
                   (text.encode(),))
@@ -5600,8 +5615,9 @@ async def adm_broadcast(m: types.Message, command: CommandObject):
         try:
             await bot.send_message(r["id"], command.args)
             ok += 1
-        except Exception:
+        except Exception as e:
             fail += 1
+            await mute_if_blocked(r["id"], e)
         await asyncio.sleep(0.05)
     await m.answer(f"Отправлено: {ok}, не доставлено: {fail}")
 
