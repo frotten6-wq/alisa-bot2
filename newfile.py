@@ -65,11 +65,27 @@ LLM_API_KEY = env("LLM_API_KEY") or GROK_API_KEY
 ADMIN_ID = int(env("ADMIN_ID", "5044633928"))
 # На Railway подключи Volume в /data и задай DB_PATH=/data/bot.db, иначе база стирается при деплое
 DB_PATH = env("DB_PATH", "bot.db")
-CHAT_MODEL = env("CHAT_MODEL", PRESET["chat"])
+# Имена моделей у провайдеров разные. Если в переменной осталось имя от другого провайдера
+# (например grok-4-fast, когда мы уже на Gemini), запрос уходит в никуда и люди видят ошибку.
+# Поэтому чужое имя молча игнорируем и берём из пресета.
+_MODEL_PREFIX = {"xai": "grok", "gemini": "gemini"}
+
+
+def model_env(name: str, default: str) -> str:
+    val = env(name, default)
+    need = _MODEL_PREFIX.get(PROVIDER)
+    if need and val and not val.lower().startswith(need):
+        log.warning("Переменная %s=%s не от провайдера %s — игнорирую, беру %s",
+                    name, val, PROVIDER, default)
+        return default
+    return val
+
+
+CHAT_MODEL = model_env("CHAT_MODEL", PRESET["chat"])
 # Модель для бесплатных сообщений, напоминаний и фоновой памяти. По умолчанию такая же, как CHAT_MODEL.
-CHAT_MODEL_FREE = env("CHAT_MODEL_FREE", PRESET["free"])
+CHAT_MODEL_FREE = model_env("CHAT_MODEL_FREE", PRESET["free"])
 # Запасная модель: на неё переключаемся, если основная перегружена (ошибка 429 resource-exhausted)
-CHAT_MODEL_FALLBACK = env("CHAT_MODEL_FALLBACK", PRESET["fallback"])
+CHAT_MODEL_FALLBACK = model_env("CHAT_MODEL_FALLBACK", PRESET["fallback"])
 LLM_BACKOFF = (2, 5, 15)    # паузы в секундах между повторными попытками
 IMAGE_MODEL = env("IMAGE_MODEL", "grok-imagine-image-quality")
 # Модель для генерации по референсу (/v1/images/edits). Если вернёт ошибку про модель,
@@ -127,7 +143,7 @@ REFERRAL_DAILY_MAX = 10     # больше стольких наград в су
 PHOTO_PRICE = 50
 # Оценка присланного фото. Модель должна уметь смотреть картинки; если выдаст ошибку
 # про модель, поменяй VISION_MODEL на доступную (например grok-2-vision-1212)
-VISION_MODEL = env("VISION_MODEL", PRESET["vision"])
+VISION_MODEL = model_env("VISION_MODEL", PRESET["vision"])
 RATE_PRICE = 35             # звёзд за подробный разбор внешности
 RATE_HINT_EVERY = 12        # как часто Алиса сама напоминает про оценку фото
 # Выключатели дорогих функций: пригодятся, когда надо экономить кредиты
@@ -1323,7 +1339,11 @@ async def llm_answer(model: str, messages: list[dict], **kw) -> str:
         for attempt in range(len(LLM_BACKOFF)):
             try:
                 r = await llm.chat.completions.create(model=mdl, messages=messages, **kw)
-                ans = (r.choices[0].message.content or "").strip()
+                # Ответ без choices или без message бывает, когда имя модели чужое
+                # или её зарезали фильтры. Это не повод падать: считаем пустым ответом.
+                choice = (r.choices or [None])[0]
+                msg = getattr(choice, "message", None)
+                ans = (getattr(msg, "content", None) or "").strip()
                 if ans:
                     if mdl != model:
                         log.info("Ответ получен запасной моделью %s", mdl)
