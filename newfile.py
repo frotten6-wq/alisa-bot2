@@ -504,9 +504,35 @@ TX = {
                       "To change it, send e.g.: /tz 0 (London), /tz +1 (Berlin), /tz -5 (New York)",
                 "de": "Deine Zeitzone: UTC{tz} (jetzt {time}).\n"
                       "Ändern zum Beispiel so: /tz +1 (Berlin, Winter), /tz +2 (Berlin, Sommer), /tz 0"},
-    "paysupport": {"ru": "По вопросам оплаты и возвратов пиши сюда: {c}. Укажи, что и когда покупал.",
-                   "en": "For payment and refund questions, write to {c}. Tell us what you bought and when.",
-                   "de": "Bei Fragen zu Zahlungen und Erstattungen schreib an {c}. Gib an, was du wann gekauft hast."},
+    # --- поддержка ---
+    "support_ask": {
+        "ru": "🛟 Поддержка\n\nОпиши, что случилось — одним сообщением. Если это про оплату, "
+              "напиши, что покупал и когда.\n\nОтвечу сразу, а если не справлюсь, передам владельцу.",
+        "en": "🛟 Support\n\nDescribe what happened in one message. If it's about a payment, "
+              "say what you bought and when.\n\nI'll answer right away, and if I can't help, "
+              "I'll pass it to the owner.",
+        "de": "🛟 Support\n\nBeschreib in einer Nachricht, was passiert ist. Wenn es um eine Zahlung "
+              "geht, schreib, was du wann gekauft hast.\n\nIch antworte sofort, und wenn ich nicht "
+              "weiterkomme, leite ich es an den Besitzer weiter."},
+    "support_human_btn": {"ru": "🙋 Нужен человек", "en": "🙋 I need a human",
+                          "de": "🙋 Ich brauche einen Menschen"},
+    "support_ok_btn": {"ru": "👍 Всё понятно", "en": "👍 That's clear", "de": "👍 Alles klar"},
+    "support_passed": {"ru": "Передала владельцу бота. Он ответит сюда же, обычно в течение дня.",
+                       "en": "Passed to the bot owner. He'll reply right here, usually within a day.",
+                       "de": "An den Besitzer weitergeleitet. Er antwortet hier, meist innerhalb "
+                             "eines Tages."},
+    "support_ok": {"ru": "Отлично 🙂 Если что — пиши ещё.", "en": "Great 🙂 Write again if you need.",
+                   "de": "Super 🙂 Schreib wieder, wenn du was brauchst."},
+    "support_fail": {"ru": "Не получилось разобраться. Передала владельцу, он ответит сюда.",
+                     "en": "I couldn't work it out. Passed it to the owner, he'll reply here.",
+                     "de": "Ich komme nicht weiter. An den Besitzer weitergeleitet, er antwortet hier."},
+    "support_reply": {"ru": "🛟 Ответ от владельца бота:\n\n{text}",
+                      "en": "🛟 Reply from the bot owner:\n\n{text}",
+                      "de": "🛟 Antwort vom Besitzer des Bots:\n\n{text}"},
+    "support_btn": {"ru": "🛟 Поддержка", "en": "🛟 Support", "de": "🛟 Support"},
+    "paysupport": {"ru": "По вопросам оплаты и возвратов: /support — отвечу сразу. Если нужен человек, передам владельцу.",
+                   "en": "Payment and refund questions: /support — I'll answer right away. If you need a human, I'll pass it on.",
+                   "de": "Fragen zu Zahlungen und Erstattungen: /support — ich antworte sofort. Brauchst du einen Menschen, leite ich weiter."},
     "privacy": {
         "ru": "🔒 Конфиденциальность\n\n"
               "Что хранится: твой Telegram-ID, имя и @ник, последние сообщения диалога (около {keep}), "
@@ -1314,7 +1340,11 @@ async def tell_admin(text: str, uid: int | None = None) -> None:
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="👤 Профиль", callback_data=f"adm:open:{uid}")]])
     try:
-        await bot.send_message(ADMIN_ID, text[:3500], reply_markup=kb)
+        sent = await bot.send_message(ADMIN_ID, text[:3500], reply_markup=kb)
+        # Запоминаем, о ком это сообщение: ответив на него reply, админ пишет прямо человеку
+        if uid is not None and db is not None:
+            await execute("INSERT OR REPLACE INTO admin_relay (admin_msg_id, user_id, created_at) "
+                          "VALUES (?,?,?)", (sent.message_id, uid, now_utc().isoformat()))
     except Exception:
         log.exception("Не удалось отправить сообщение админу")
 
@@ -1401,6 +1431,11 @@ CREATE TABLE IF NOT EXISTS photo_sent (
     created_at TEXT NOT NULL,
     PRIMARY KEY (user_id, photo_id)
 );
+CREATE TABLE IF NOT EXISTS admin_relay (
+    admin_msg_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -1470,6 +1505,7 @@ NEW_COLS = {
     "awaiting_nick": "INTEGER NOT NULL DEFAULT 0",
     "source_asked": "INTEGER NOT NULL DEFAULT 0",
     "gift_photo": "INTEGER NOT NULL DEFAULT 0",
+    "awaiting_support": "INTEGER NOT NULL DEFAULT 0",
 }
 
 USER_FIELDS = {
@@ -1481,6 +1517,7 @@ USER_FIELDS = {
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
     "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
     "custom", "custom_unlocked", "awaiting_nick", "source_asked", "gift_photo",
+    "awaiting_support",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -2732,6 +2769,68 @@ async def rate_photo(chat_id: int, uid: int, file_id: str, lang: str) -> bool:
         return False
 
 
+# ---------- Поддержка ----------
+
+async def support_facts(u: dict) -> str:
+    """Что поддержка знает про этого человека и про бота: цены, покупки, остатки."""
+    uid = u["id"]
+    pays = await fetch_all(
+        "SELECT payload, stars, refunded, created_at FROM payments WHERE user_id=? "
+        "ORDER BY created_at DESC LIMIT 10", (uid,))
+    bought = "; ".join(
+        f"{p['payload']} за {p['stars']}⭐ {p['created_at'][:10]}"
+        + (" (возвращено)" if p["refunded"] else "") for p in pays) or "покупок не было"
+    prices = "; ".join(f"{k} — {p['price']}⭐" for k, p in PRODUCTS.items())
+    sub = (f"активна до {u['subscription_until'][:10]} UTC"
+           if has_sub(u) else "нет")
+    return (
+        f"Товары и цены в боте: {prices}. Отдельно: фото {PHOTO_PRICE}⭐, "
+        f"голосовое {VOICE_PRICE}⭐, разбор фото {RATE_PRICE}⭐.\n"
+        f"Бесплатно каждому: {FREE_MESSAGES} сообщений, {FREE_VOICES} озвучка, "
+        f"ежедневный бонус (+{STREAK_REWARDS[0]}/{STREAK_REWARDS[1]}/{STREAK_REWARDS[2]} по дням серии), "
+        f"+{CHANNEL_BONUS} за подписку на канал, +{REFERRAL_REWARD} за приглашённого друга.\n"
+        f"Оплата только звёздами Telegram (Stars). Возврат делает владелец бота вручную.\n"
+        f"Этот человек: покупки — {bought}. Подписка — {sub}. "
+        f"Платных сообщений в запасе {u['paid']}, бонусных {u.get('bonus_msgs') or 0}, "
+        f"фото в запасе {u['photo_credits']}, бесплатных озвучек {u['free_voices']}.")
+
+
+SUPPORT_PROMPT = (
+    "Ты — поддержка Telegram-бота «Алиса» (ИИ-собеседница, 18+). Отвечай человеку коротко, "
+    "по делу и доброжелательно, 2-4 предложения, без приветствий и подписей.\n"
+    "Опирайся ТОЛЬКО на факты ниже. Если фактов не хватает, если человек просит возврат денег, "
+    "жалуется на списание, сообщает о технической поломке или его вопрос не про бота — "
+    "не выдумывай, а ответь ровно одним словом: ESCALATE\n"
+    "Никогда не обещай возврат, компенсацию или сроки от имени владельца."
+)
+
+
+async def support_answer(u: dict, question: str) -> str | None:
+    """Ответ поддержки или None, если нужен человек."""
+    L = lang_of(u)
+    try:
+        text = await llm_answer(CHAT_MODEL_FREE, [
+            {"role": "system", "content": SUPPORT_PROMPT + "\n\nФакты:\n" + await support_facts(u)
+             + f"\n\nОтвечай {LANG_FOR_MODEL[L]}."},
+            {"role": "user", "content": question[:1000]}], temperature=0.3)
+    except Exception:
+        log.exception("Ошибка ответа поддержки")
+        return None
+    return None if "ESCALATE" in text.upper() else text
+
+
+def support_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=tr(lang, "support_ok_btn"), callback_data="sup:ok"),
+        InlineKeyboardButton(text=tr(lang, "support_human_btn"), callback_data="sup:human")]])
+
+
+async def support_escalate(u: dict, question: str) -> None:
+    """Передаём вопрос владельцу: он ответит обычным reply на это сообщение."""
+    await tell_admin(f"🛟 Вопрос в поддержку\n{who(u)}\n\n«{question[:600]}»\n\n"
+                     f"Ответь на это сообщение — текст уйдёт человеку.", u["id"])
+
+
 async def update_memory(uid: int) -> None:
     """Фоновое обновление короткой заметки о собеседнике («долгая память»)."""
     try:
@@ -3222,7 +3321,56 @@ async def cmd_tz(m: types.Message, command: CommandObject):
 @dp.message(Command("paysupport"))
 async def cmd_paysupport(m: types.Message):
     L = await ulang(m.from_user.id)
-    await m.answer(tr(L, "paysupport", c=SUPPORT_CONTACT))
+    await m.answer(tr(L, "paysupport"))
+
+
+@dp.message(Command("support"))
+async def cmd_support(m: types.Message):
+    uid = m.from_user.id
+    L = await ulang(uid)
+    await set_fields(uid, awaiting_support=1)
+    await m.answer(tr(L, "support_ask"))
+
+
+@dp.callback_query(F.data.startswith("sup:"))
+async def cb_support(c: types.CallbackQuery):
+    uid = c.from_user.id
+    u = await get_user(uid)
+    L = lang_of(u)
+    action = c.data.split(":", 1)[1]
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await c.answer()
+    if action == "human":
+        # Вопрос человека — это сообщение перед ответом поддержки
+        q = await fetch_one(
+            "SELECT content FROM history WHERE user_id=? AND role='user' ORDER BY id DESC LIMIT 1",
+            (uid,))
+        await support_escalate(u, (q or {}).get("content", "(вопрос не сохранился)"))
+        await c.message.answer(tr(L, "support_passed"))
+    else:
+        await c.message.answer(tr(L, "support_ok"))
+
+
+@dp.message(F.text, ~F.text.startswith("/"), F.reply_to_message, ADMIN)
+async def adm_relay_reply(m: types.Message):
+    """Ответ админа на любое уведомление о человеке уходит этому человеку."""
+    row = await fetch_one("SELECT user_id FROM admin_relay WHERE admin_msg_id=?",
+                          (m.reply_to_message.message_id,))
+    if not row:
+        # Не ответ человеку — значит, админ просто пишет Алисе
+        await chat_core(m, (m.text or "").strip())
+        return
+    uid = row["user_id"]
+    L = await ulang(uid)
+    try:
+        await bot.send_message(uid, tr(L, "support_reply", text=m.text))
+        await add_assistant_msg(uid, m.text)
+        await m.reply("✅ Отправлено")
+    except Exception as e:
+        await m.reply(f"Не доставлено: {type(e).__name__}. Возможно, человек заблокировал бота.")
 
 
 @dp.message(Command("privacy"))
@@ -3319,7 +3467,8 @@ async def btn_profile(m: types.Message):
     if has_sub(u):
         text += "\n" + tr(L, "p_sub", d=fmt_dt(parse_dt(u["subscription_until"])))
     text += f"\n{tr(L, 'p_lang')}: {LANG_NAMES[L]} (/language)"
-    rows = [[InlineKeyboardButton(text=tr(L, "pm_lang"), callback_data="pm:lang")]]
+    rows = [[InlineKeyboardButton(text=tr(L, "pm_lang"), callback_data="pm:lang")],
+            [InlineKeyboardButton(text=tr(L, "support_btn"), callback_data="pm:support")]]
     if channel_for(L):
         rows.insert(0, [InlineKeyboardButton(text=BTN["channel"][L], callback_data="pm:channel")])
     await m.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -3335,6 +3484,9 @@ async def cb_profile_menu(c: types.CallbackQuery):
     elif c.data == "pm:channel":
         text, kb = channel_payload(u)
         await c.message.answer(text, reply_markup=kb)
+    elif c.data == "pm:support":
+        await set_fields(u["id"], awaiting_support=1)
+        await c.message.answer(tr(L, "support_ask"))
 
 
 async def add_assistant_msg(uid: int, text: str) -> None:
@@ -3911,6 +4063,21 @@ async def chat_core(m: types.Message, text: str) -> None:
                 await log_flag(uid, kind, text)
                 await notify_admin(f"🚩 {FLAG_LABELS[kind]}\n{who(u)} /u_{uid}\n«{text[:200]}»", f"jb:{uid}")
 
+        # Человек описывает проблему для поддержки
+        if u.get("awaiting_support"):
+            await set_fields(uid, awaiting_support=0)
+            await execute("INSERT INTO history (user_id, role, content) VALUES (?,?,?)",
+                          (uid, "user", text))
+            async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
+                answer = await support_answer(u, text)
+            if answer:
+                await m.answer(answer, reply_markup=support_kb(L))
+                await add_assistant_msg(uid, answer)
+            else:
+                await support_escalate(u, text)
+                await m.answer(tr(L, "support_fail"))
+            return
+
         # Шифр вместо разговора (точки-тире, двоичный код): отвечаем сами, модель не трогаем
         if not admin and looks_like_cipher(text):
             await m.answer(tr(L, "cipher"))
@@ -4380,6 +4547,7 @@ ADMIN_HELP = (
     "/flags [ID] — подозрительные сообщения\n"
     "/history ID · /payments ID\n"
     "/refund USER_ID CHARGE_ID · /broadcast текст\n"
+    "Ответ (reply) на любое уведомление о человеке → твой текст уйдёт ему в бот\n"
     "/addphotos [теги] — режим загрузки: кидай фото пачками, /done — закончить\n"
     "/addphoto теги — добавить одно фото (подписью к фото или ответом)\n"
     "/photos · /delphoto_ID — библиотека фото\n"
@@ -5586,7 +5754,8 @@ async def main():
         "notify": ("Напоминания от Алисы вкл/выкл", "Alice's messages on/off", "Alices Nachrichten an/aus"),
         "privacy": ("Конфиденциальность", "Privacy", "Datenschutz"),
         "deleteme": ("Удалить мои данные", "Delete my data", "Meine Daten löschen"),
-        "paysupport": ("Поддержка по оплате", "Payment support", "Hilfe bei Zahlungen"),
+        "support": ("Поддержка: оплата и проблемы", "Support: payments & problems",
+                    "Support: Zahlungen & Probleme"),
     }
     for i, code in enumerate(("ru", "en", "de")):
         cmds = [BotCommand(command=c, description=d[i]) for c, d in cmd_desc.items()]
