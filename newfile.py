@@ -86,7 +86,7 @@ ELEVEN_VOICE_ID = env("ELEVEN_VOICE_ID")
 ELEVEN_MODEL = env("ELEVEN_MODEL", "eleven_multilingual_v2")
 ELEVEN_STT_MODEL = env("ELEVEN_STT_MODEL", "scribe_v1")   # распознавание голосовых от пользователя
 VOICE_ENABLED = bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)
-VOICE_PRICE = 20            # звёзд за одно голосовое для тех, у кого нет подписки
+VOICE_PRICE = 30            # звёзд за одно голосовое для тех, у кого нет подписки
 VOICE_MAX_CHARS = int(env("VOICE_MAX_CHARS", "300"))   # длиннее обрезаем, чтобы не тратить символы
 VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
 FREE_VOICES = 1             # бесплатных озвучек каждому новому пользователю
@@ -113,7 +113,7 @@ PHOTO_PRICE = 50
 # Оценка присланного фото. Модель должна уметь смотреть картинки; если выдаст ошибку
 # про модель, поменяй VISION_MODEL на доступную (например grok-2-vision-1212)
 VISION_MODEL = env("VISION_MODEL", PRESET["vision"])
-RATE_PRICE = 20             # звёзд за подробный разбор внешности
+RATE_PRICE = 35             # звёзд за подробный разбор внешности
 RATE_HINT_EVERY = 12        # как часто Алиса сама напоминает про оценку фото
 # Выключатели дорогих функций: пригодятся, когда надо экономить кредиты
 VISION_ENABLED = env("VISION_ENABLED", "1") == "1"      # смотреть присланные фото
@@ -179,20 +179,20 @@ AUTOPOST_HOURS = {"ru": AUTOPOST_HOUR, "en": int(env("AUTOPOST_HOUR_EN", "21")),
 # cat — раздел магазина: msgs (сообщения), photo (фото и голос), sub (подписка), gift (подарки).
 # Подарки ничего не стоят в API: это чистая прибыль, человек покупает реакцию Алисы, а не функцию.
 PRODUCTS = {
-    "msg_40":    {"title": "40 сообщений",      "price": 25,   "msgs": 40,  "cat": "msgs"},
-    "msg_150":   {"title": "150 сообщений",     "price": 80,   "msgs": 150, "cat": "msgs"},
-    "photo_3":   {"title": "3 фото",            "price": 120,  "photos": 3,  "cat": "photo"},
-    "photo_10":  {"title": "10 фото",           "price": 350,  "photos": 10, "cat": "photo"},
-    "voice_5":   {"title": "5 голосовых",       "price": 80,   "voices": 5,  "cat": "photo"},
-    "evening":   {"title": "🌙 Вечер с Алисой", "price": 199,  "days": 1, "photos": 3, "voices": 5,
+    "msg_40":    {"title": "40 сообщений",      "price": 50,   "msgs": 40,  "cat": "msgs"},
+    "msg_150":   {"title": "150 сообщений",     "price": 150,  "msgs": 150, "cat": "msgs"},
+    "photo_3":   {"title": "3 фото",            "price": 149,  "photos": 3,  "cat": "photo"},
+    "photo_10":  {"title": "10 фото",           "price": 399,  "photos": 10, "cat": "photo"},
+    "voice_5":   {"title": "5 голосовых",       "price": 99,   "voices": 5,  "cat": "photo"},
+    "evening":   {"title": "🌙 Вечер с Алисой", "price": 249,  "days": 1, "photos": 3, "voices": 5,
                   "cat": "sub"},
-    "sub_day":   {"title": "Подписка: 1 день",  "price": 70,   "days": 1,  "cat": "sub"},
-    "sub_week":  {"title": "Подписка: 7 дней",  "price": 350,  "days": 7,  "cat": "sub"},
-    "sub_month": {"title": "Подписка: 30 дней", "price": 1100, "days": 30, "cat": "sub"},
+    "sub_day":   {"title": "Подписка: 1 день",  "price": 99,   "days": 1,  "cat": "sub"},
+    "sub_week":  {"title": "Подписка: 7 дней",  "price": 399,  "days": 7,  "cat": "sub"},
+    "sub_month": {"title": "Подписка: 30 дней", "price": 1190, "days": 30, "cat": "sub"},
     "gift_flowers": {"title": "💐 Цветы",       "price": 25,   "gift": "flowers", "msgs": 5,  "cat": "gift"},
     "gift_perfume": {"title": "🌸 Духи",        "price": 75,   "gift": "perfume", "msgs": 15, "cat": "gift"},
     "gift_jewelry": {"title": "💎 Украшение",   "price": 200,  "gift": "jewelry", "msgs": 50, "cat": "gift"},
-    "custom_unlock": {"title": "⚙️ Все настройки Алисы навсегда", "price": 150, "unlock": True,
+    "custom_unlock": {"title": "⚙️ Все настройки Алисы навсегда", "price": 199, "unlock": True,
                       "cat": "gift"},
 }
 SHOP_CATS = ("msgs", "photo", "sub", "gift")
@@ -731,9 +731,9 @@ TX = {
                             "(and give you messages in return):",
                       "de": "Willst du mir eine Freude machen? 😊 Ich merke mir jedes Geschenk "
                             "(und schenke dir Nachrichten zurück):"},
-    "evening_desc": {"ru": "🌙 1 день без ограничений + 3 фото + 5 голосовых. По отдельности — 270⭐",
-                     "en": "🌙 1 day unlimited + 3 photos + 5 voice replies. Separately — 270⭐",
-                     "de": "🌙 1 Tag unbegrenzt + 3 Fotos + 5 Sprachnachrichten. Einzeln — 270⭐"},
+    "evening_desc": {"ru": "🌙 1 день без ограничений + 3 фото + 5 голосовых. По отдельности — 347⭐",
+                     "en": "🌙 1 day unlimited + 3 photos + 5 voice replies. Separately — 347⭐",
+                     "de": "🌙 1 Tag unbegrenzt + 3 Fotos + 5 Sprachnachrichten. Einzeln — 347⭐"},
     "photos_added": {"ru": "Готово ✅ Фото в запасе: {n}. Напиши «фото» и описание 😉",
                      "en": "Done ✅ Photos in stock: {n}. Write «photo» and a description 😉",
                      "de": "Fertig ✅ Fotos auf Vorrat: {n}. Schreib «Foto» und eine Beschreibung 😉"},
