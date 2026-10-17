@@ -16,7 +16,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BotCommand, BufferedInputFile, ErrorEvent, FSInputFile,
-    InlineKeyboardButton, InlineKeyboardMarkup,
+    InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
     KeyboardButton, LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup,
 )
 from aiogram.utils.chat_action import ChatActionSender
@@ -415,6 +415,11 @@ TX = {
     "photo_minor_in": {"ru": "Я не обсуждаю фото детей и подростков. Совсем.",
                        "en": "I don't discuss photos of children or teenagers. At all.",
                        "de": "Ich bespreche keine Fotos von Kindern oder Jugendlichen. Gar nicht."},
+    # Когда модель не смогла понять возраст. Никаких обвинений: человек чаще всего взрослый,
+    # просто фото нечёткое, и обвинение здесь — верный способ его потерять.
+    "photo_unsure_in": {"ru": "Что-то я плохо тут всё разглядела 🙈 Скинь другое, где получше видно?",
+                        "en": "I can't really make this one out 🙈 Send another one where I can see better?",
+                        "de": "Ich kann hier kaum was erkennen 🙈 Schick mir ein anderes, wo man mehr sieht?"},
     "photo_fail": {"ru": "Что-то не разглядела фото, попробуй прислать ещё раз 🙈",
                    "en": "I couldn't quite see that photo, try sending it again 🙈",
                    "de": "Ich konnte das Foto nicht richtig sehen, schick es nochmal 🙈"},
@@ -514,25 +519,29 @@ TX = {
     "privacy": {
         "ru": "🔒 Конфиденциальность\n\n"
               "Что хранится: твой Telegram-ID, имя и @ник, последние сообщения диалога (около {keep}), "
-              "короткая заметка Алисы о тебе, платежи и технические счётчики.\n\n"
-              "Как используется: сообщения отправляются сервисам, которые генерируют ответы (xAI) и голос "
-              "(ElevenLabs). Администратор бота может просматривать диалоги для поддержки и безопасности.\n\n"
+              "короткая заметка Алисы о тебе, присланные тобой фото, платежи и технические счётчики.\n\n"
+              "Как используется: сообщения отправляются сервисам, которые генерируют ответы (Google Gemini) "
+              "и голос (ElevenLabs). Администратор бота может просматривать диалоги и присланные фото "
+              "для поддержки и проверки безопасности.\n\n"
               "/reset — очистить историю и заметку\n"
               "/deleteme — удалить свои данные: имя, историю, заметку и сценарии. Запись об оплатах и технические "
               "счётчики остаются: они нужны для учёта платежей и защиты от злоупотреблений.\n\nВопросы: {support}",
         "en": "🔒 Privacy\n\n"
               "What's stored: your Telegram ID, name and @username, recent chat messages (about {keep}), "
-              "Alice's short note about you, payments and technical counters.\n\n"
-              "How it's used: messages are sent to the services that generate replies (xAI) and voice "
-              "(ElevenLabs). The bot admin may view chats for support and safety.\n\n"
+              "Alice's short note about you, photos you send, payments and technical counters.\n\n"
+              "How it's used: messages are sent to the services that generate replies (Google Gemini) and "
+              "voice (ElevenLabs). The bot admin may view chats and photos you send for support "
+              "and safety checks.\n\n"
               "/reset — clear history and note\n"
               "/deleteme — delete your data: name, history, note and modes. Payment records and technical "
               "counters are kept for accounting and abuse prevention.\n\nQuestions: {support}",
         "de": "🔒 Datenschutz\n\n"
               "Was gespeichert wird: deine Telegram-ID, Name und @Benutzername, die letzten Nachrichten "
-              "(etwa {keep}), Alices kurze Notiz über dich, Zahlungen und technische Zähler.\n\n"
-              "Wofür: Nachrichten werden an Dienste gesendet, die Antworten (xAI) und Stimme (ElevenLabs) "
-              "erzeugen. Der Admin des Bots kann Chats für Support und Sicherheit einsehen.\n\n"
+              "(etwa {keep}), Alices kurze Notiz über dich, von dir gesendete Fotos, Zahlungen und "
+              "technische Zähler.\n\n"
+              "Wofür: Nachrichten werden an Dienste gesendet, die Antworten (Google Gemini) und Stimme "
+              "(ElevenLabs) erzeugen. Der Admin des Bots kann Chats und gesendete Fotos für Support "
+              "und Sicherheitsprüfungen einsehen.\n\n"
               "/reset — Verlauf und Notiz löschen\n"
               "/deleteme — deine Daten löschen: Name, Verlauf, Notiz und Modi. Zahlungsdaten und technische "
               "Zähler bleiben für die Abrechnung und zum Schutz vor Missbrauch erhalten.\n\nFragen: {support}"},
@@ -1428,6 +1437,17 @@ CREATE TABLE IF NOT EXISTS photo_rates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     file_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+-- Журнал присланных Алисе фото, чтобы админ мог проверять, не ошибается ли модель.
+-- Для вердикта minor file_id не сохраняется: такие фото не хранятся и не показываются.
+CREATE TABLE IF NOT EXISTS photo_in (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    file_id TEXT,
+    kind TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    descr TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS photo_lib (
@@ -2683,8 +2703,11 @@ VISION_CLASSIFY = (
     "You look at a photo a user sent to a chat companion bot. Answer ONLY with JSON: "
     '{"kind": "...", "subject": "...", "desc": "..."}\n'
     "kind is one of:\n"
-    "  minor — any child or teenager under 18 is visible, or you are unsure whether the "
-    "person is an adult. When in doubt always answer minor.\n"
+    "  minor — you can clearly see that a child or a young teenager is in the photo. "
+    "Use this only when you are confident the person is under 18.\n"
+    "  unsure — there is a person, but you cannot reliably tell whether they are an adult: "
+    "a young-looking adult, a face that is unclear, blurry or partly hidden. "
+    "When you hesitate between minor and person, answer unsure — never guess either way.\n"
     "  nsfw — nudity, underwear, sexual content, or a person is undressed.\n"
     "  person — one or more clearly adult people, dressed normally.\n"
     "  other — no people: animals, food, landscape, objects, screenshots, memes.\n"
@@ -2692,6 +2715,21 @@ VISION_CLASSIFY = (
     "a man in a car).\n"
     "desc: one short neutral sentence describing the photo."
 )
+
+
+async def log_photo_in(uid: int, file_id: str | None, look: dict) -> None:
+    """Запись о присланном фото для админской проверки.
+
+    file_id=None означает, что само фото не сохранено (вердикт minor) — в панели
+    такая запись показывается одной строкой текста, без картинки."""
+    try:
+        await execute(
+            "INSERT INTO photo_in (user_id, file_id, kind, subject, descr, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (uid, file_id, look.get("kind", "other"), look.get("subject", ""),
+             look.get("desc", ""), now_utc().isoformat()))
+    except Exception:
+        log.exception("Не удалось записать фото в журнал")
 
 
 async def vision_look(image_b64: str) -> dict:
@@ -2706,7 +2744,7 @@ async def vision_look(image_b64: str) -> dict:
         mt = re.search(r"\{.*\}", raw, re.S)
         data = json.loads(mt.group(0)) if mt else {}
         kind = str(data.get("kind", "")).lower().strip()
-        if kind not in ("minor", "nsfw", "person", "other"):
+        if kind not in ("minor", "unsure", "nsfw", "person", "other"):
             kind = "other"
         return {"kind": kind, "subject": str(data.get("subject", ""))[:60],
                 "desc": str(data.get("desc", ""))[:200]}
@@ -3293,6 +3331,8 @@ async def cb_delete(c: types.CallbackQuery):
     async with user_lock(uid):
         await execute("DELETE FROM history WHERE user_id=?", (uid,))
         await execute("DELETE FROM photo_orders WHERE user_id=?", (uid,))
+        # Журнал присланных фото тоже уходит: человек попросил удалить свои данные
+        await execute("DELETE FROM photo_in WHERE user_id=?", (uid,))
         await set_fields(uid, name=None, memory_note="", since_summary=0, scenario=None,
                          awaiting_name=0, tg_username="", tg_name="", gender=None, rp_plot=None,
                          awaiting_plot=0)
@@ -4115,17 +4155,25 @@ async def on_photo(m: types.Message):
         await m.answer(tr(L, "photo_fail"))
         return
 
+    if look["kind"] == "error":
+        await m.answer(tr(L, "photo_fail"))
+        return
+    # Журнал для проверки админом. Для вердикта minor file_id намеренно не сохраняем:
+    # такие фото нельзя ни хранить, ни пересылать, остаётся только текстовая запись.
+    await log_photo_in(uid, None if look["kind"] == "minor" else file_id, look)
+
     if look["kind"] == "minor":
         await log_flag(uid, "sent_minor", look["desc"])
         await m.answer(tr(L, "photo_minor_in"))
         await tell_admin(f"🚩 {FLAG_LABELS['sent_minor']}\n{who(u)}\n«{look['desc']}»", uid)
         return
+    if look["kind"] == "unsure":
+        # Возраст не определён: реагируем мягко и без флага, но ничего платного не предлагаем
+        await m.answer(tr(L, "photo_unsure_in"))
+        return
     if look["kind"] == "nsfw":
         await log_flag(uid, "sent_nsfw", look["desc"])
         await m.answer(tr(L, "photo_nsfw_in"))
-        return
-    if look["kind"] == "error":
-        await m.answer(tr(L, "photo_fail"))
         return
 
     await send_human(m, await free_photo_reaction(u, look["desc"], look["subject"]))
@@ -4502,8 +4550,88 @@ def card_kb(u: dict) -> InlineKeyboardMarkup:
         [ban_btn, _b("❌ Снять подписку", f"adm:sub:{uid}:0")],
         [_b("📜 История", f"adm:hist:{uid}"), _b("💳 Платежи", f"adm:pay:{uid}"),
          _b("🚩 Флаги", f"adm:flags:{uid}")],
+        [_b("🖼 Фото", f"ph:{uid}:0")],
         [_b("🔄 Обновить", f"adm:card:{uid}")],
     ])
+
+
+PHOTO_KIND_LABELS = {
+    "person": "👤 взрослый человек",
+    "unsure": "❓ возраст не определён",
+    "nsfw": "🔞 откровенное",
+    "other": "🌄 без людей",
+    "minor": "🚩 несовершеннолетний (фото не сохранено)",
+}
+
+
+async def photos_page(uid: int, n: int) -> tuple[str | None, str, InlineKeyboardMarkup]:
+    """Одна запись из журнала присланных фото. uid=0 — по всем пользователям.
+
+    Возвращает (file_id или None, подпись, кнопки). Для вердикта minor file_id всегда None:
+    такие фото не хранятся, остаётся только строка о том, что оно было."""
+    where, params = ("WHERE user_id=?", (uid,)) if uid else ("", ())
+    total = await scalar(f"SELECT COUNT(*) FROM photo_in {where}", params)
+    if not total:
+        return (None, "Фото от этого человека ещё не было." if uid else "Фото ещё никто не присылал.")
+    n = max(0, min(n, total - 1))
+    row = await fetch_one(
+        f"SELECT * FROM photo_in {where} ORDER BY id DESC LIMIT 1 OFFSET ?", (*params, n))
+    owner = await fetch_one("SELECT * FROM users WHERE id=?", (row["user_id"],))
+    when = parse_dt(row["created_at"]).strftime("%d.%m %H:%M")
+    cap = (f"Фото {n + 1} из {total}\n"
+           f"{PHOTO_KIND_LABELS.get(row['kind'], row['kind'])}\n"
+           f"{who(owner) if owner else row['user_id']}\n"
+           f"{when} UTC")
+    if row["subject"]:
+        cap += f"\nНа фото: {row['subject']}"
+    if row["descr"]:
+        cap += f"\n«{row['descr']}»"
+    if not row["file_id"]:
+        cap += "\n\nСамо фото не сохранено и показано не будет."
+    nav = []
+    if n + 1 < total:
+        nav.append(_b("← Раньше", f"ph:{uid}:{n + 1}"))
+    if n > 0:
+        nav.append(_b("Позже →", f"ph:{uid}:{n - 1}"))
+    rows = [nav] if nav else []
+    rows.append([_b("👤 Карточка", f"adm:open:{row['user_id']}"),
+                 _b("🚫 Бан", f"adm:ban:{row['user_id']}")])
+    return row["file_id"], cap, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_photos(c_or_m, uid: int, n: int, edit=None) -> None:
+    """Показывает запись журнала: картинкой, если фото сохранено, иначе текстом."""
+    res = await photos_page(uid, n)
+    if len(res) == 2:   # записей нет
+        await c_or_m.answer(res[1])
+        return
+    file_id, cap, kb = res
+    if edit is not None and file_id:
+        try:
+            await edit.edit_media(InputMediaPhoto(media=file_id, caption=cap), reply_markup=kb)
+            return
+        except Exception:
+            pass    # картинку на картинку заменить не вышло — просто пришлём новым сообщением
+    if file_id:
+        await c_or_m.answer_photo(file_id, caption=cap, reply_markup=kb)
+    else:
+        await c_or_m.answer(cap, reply_markup=kb)
+
+
+@dp.message(Command("inbox"), ADMIN)
+async def adm_photo_inbox(m: types.Message):
+    """Журнал всех присланных Алисе фото, от свежих к старым.
+    (/photos — это библиотека фото Алисы, другое.)"""
+    await show_photos(m, 0, 0)
+
+
+@dp.callback_query(F.data.startswith("ph:"), ADMIN)
+async def cb_photos(c: types.CallbackQuery):
+    parts = c.data.split(":")
+    uid = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else 0
+    n = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    await show_photos(c.message, uid, n, edit=c.message)
+    await c.answer()
 
 
 async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
