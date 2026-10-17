@@ -90,6 +90,17 @@ ELEVEN_VOICE_ID = env("ELEVEN_VOICE_ID")
 ELEVEN_MODEL = env("ELEVEN_MODEL", "eleven_multilingual_v2")
 ELEVEN_STT_MODEL = env("ELEVEN_STT_MODEL", "scribe_v1")   # распознавание голосовых от пользователя
 VOICE_ENABLED = bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)
+# Кто озвучивает: eleven (платный, свой голос) или edge (голоса Microsoft, бесплатно и без ключа).
+# Переключается переменной TTS_PROVIDER на Railway, перевыкатывать код не нужно.
+TTS_PROVIDER = (env("TTS_PROVIDER", "eleven") or "eleven").lower()
+# Женские голоса Edge по языку; можно переопределить переменной EDGE_VOICE_RU и т.д.
+EDGE_VOICES = {
+    "ru": env("EDGE_VOICE_RU", "ru-RU-SvetlanaNeural"),
+    "en": env("EDGE_VOICE_EN", "en-US-AriaNeural"),
+    "de": env("EDGE_VOICE_DE", "de-DE-KatjaNeural"),
+}
+if TTS_PROVIDER == "edge":
+    VOICE_ENABLED = True    # для Edge ключ не нужен
 VOICE_PRICE = 30            # звёзд за одно голосовое для тех, у кого нет подписки
 VOICE_MAX_CHARS = int(env("VOICE_MAX_CHARS", "300"))   # длиннее обрезаем, чтобы не тратить символы
 VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
@@ -2611,7 +2622,54 @@ def voice_kb(aid: int, lang: str = "ru") -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=tr(lang, "voice_btn"), callback_data=f"vo:{aid}")]])
 
 
+# Когда у провайдера кончилась квота, не долбимся в него и не предлагаем людям озвучку.
+_tts_out_until = 0.0
+TTS_QUOTA_PAUSE = 6 * 3600   # через сколько пробуем снова
+
+
+def voice_on() -> bool:
+    """Можно ли сейчас предлагать озвучку."""
+    return VOICE_ENABLED and time.monotonic() >= _tts_out_until
+
+
+def _tts_lang(text: str) -> str:
+    """Какой голос брать: по буквам в тексте. Нужен только для Edge."""
+    if re.search(r"[а-яёА-ЯЁ]", text):
+        return "ru"
+    if re.search(r"[äöüßÄÖÜ]", text):
+        return "de"
+    return "en"
+
+
+async def tts_edge(text: str) -> bytes:
+    """Бесплатная озвучка голосами Microsoft Edge. Ключ не нужен, лимитов нет.
+    Импорт внутри функции: если пакета нет, бот всё равно поднимется."""
+    import edge_tts   # noqa: PLC0415
+    voice = EDGE_VOICES.get(_tts_lang(text), EDGE_VOICES["en"])
+    buf = bytearray()
+    async for chunk in edge_tts.Communicate(text, voice).stream():
+        if chunk["type"] == "audio":
+            buf += chunk["data"]
+    if not buf:
+        raise RuntimeError("edge-tts вернул пустой звук")
+    await track("tts_chars", len(text))
+    return bytes(buf)
+
+
 async def tts(text: str) -> bytes:
+    global _tts_out_until
+    if TTS_PROVIDER == "edge":
+        return await tts_edge(text)
+    try:
+        return await tts_eleven(text)
+    except RuntimeError as e:
+        if "quota_exceeded" in str(e):
+            _tts_out_until = time.monotonic() + TTS_QUOTA_PAUSE
+            log.warning("ElevenLabs: кончилась квота, озвучку не предлагаем %s ч", TTS_QUOTA_PAUSE // 3600)
+        raise
+
+
+async def tts_eleven(text: str) -> bytes:
     async with httpx.AsyncClient(timeout=60) as http:
         r = await http.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}",
@@ -4108,7 +4166,7 @@ async def chat_core(m: types.Message, text: str) -> None:
             await set_fields(uid, source_asked=1)
             await m.answer(tr(L, "ask_source"), reply_markup=source_kb(L))
 
-        await send_human(m, ans, voice_kb(aid, L) if VOICE_ENABLED else None)
+        await send_human(m, ans, voice_kb(aid, L) if voice_on() else None)
 
         # Мягкое предупреждение, пока лимит ещё не кончился
         warn = None
@@ -4254,7 +4312,7 @@ async def cb_voice(c: types.CallbackQuery):
     uid = c.from_user.id
     u = await get_user(uid)
     L = lang_of(u)
-    if not VOICE_ENABLED:
+    if not voice_on():
         await c.answer(tr(L, "tts_unavail"), show_alert=True)
         return
     raw = c.data.split(":", 1)[1]
@@ -4358,7 +4416,7 @@ async def pre_checkout(q: PreCheckoutQuery):
             "SELECT id FROM photo_orders WHERE id=? AND user_id=?", (int(oid), q.from_user.id)))
     elif payload.startswith("voice:"):
         oid = payload[6:]
-        ok = VOICE_ENABLED and oid.isdigit() and bool(await fetch_one(
+        ok = voice_on() and oid.isdigit() and bool(await fetch_one(
             "SELECT id FROM history WHERE id=? AND user_id=? AND role='assistant'", (int(oid), q.from_user.id)))
     L = await ulang(q.from_user.id)
     await q.answer(ok=ok, error_message=None if ok else tr(L, "checkout_err"))
@@ -5101,7 +5159,9 @@ async def adm_stats(m: types.Message):
     langs_line = " · ".join(f"{r['l']}: {r['n']}/{r['talk'] or 0}/{r['pay'] or 0}" for r in by_lang)
     voices_day = (await usage_for(admin_day())).get("tts_free", 0)
     ref = "есть" if await get_reference() else "нет (/genref или /setref)"
-    voice = "включены" if VOICE_ENABLED else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)"
+    voice = (f"включены ({TTS_PROVIDER})" if voice_on()
+             else ("ПАУЗА: кончилась квота" if VOICE_ENABLED
+                   else "выключены (нет ELEVEN_API_KEY или ELEVEN_VOICE_ID)"))
     await m.answer(
         f"Пользователей: {total} (подтвердили 18+: {confirmed})\n"
         f"Новых: за 24ч {new_day}, за 7 дней {new_week}\n"
