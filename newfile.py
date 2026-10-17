@@ -51,9 +51,13 @@ PROVIDER = (env("PROVIDER", "xai") or "xai").lower()
 PRESETS = {
     "xai": {"base": "https://api.x.ai/v1", "chat": "grok-4",
             "free": "grok-4-fast", "fallback": "grok-4", "vision": "grok-4"},
+    # Важно: на бесплатном тарифе Google у «полных» flash-моделей всего 20 запросов в сутки,
+    # и бот их съедает за пару минут. Бесплатно работает только flash-lite (около 500 в сутки),
+    # поэтому здесь везде он. Если подключишь оплату в Google — верни gemini-3.6-flash
+    # переменными CHAT_MODEL и VISION_MODEL, качество ответов заметно выше.
     "gemini": {"base": "https://generativelanguage.googleapis.com/v1beta/openai/",
-               "chat": "gemini-3.6-flash", "free": "gemini-3.5-flash-lite",
-               "fallback": "gemini-3.5-flash-lite", "vision": "gemini-3.6-flash"},
+               "chat": "gemini-3.5-flash-lite", "free": "gemini-3.5-flash-lite",
+               "fallback": "gemini-3.5-flash-lite", "vision": "gemini-3.5-flash-lite"},
 }
 PRESET = PRESETS.get(PROVIDER, PRESETS["xai"])
 LLM_BASE_URL = env("LLM_BASE_URL", PRESET["base"])
@@ -1242,14 +1246,46 @@ def _llm_transient(e: Exception) -> bool:
         "connection", "apiconnection", "internalserver", "500"))
 
 
+# Модели, которые упёрлись в квоту: имя -> момент (time.monotonic), раньше которого не трогаем.
+_llm_quota_until: dict[str, float] = {}
+_QUOTA_RETRY_RE = re.compile(r"retry in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", re.I)
+
+
+def _llm_quota_wait(e: Exception) -> float:
+    """Сколько секунд модель простаивает из-за исчерпанной квоты. 0 — дело не в квоте.
+
+    У бесплатного тарифа Google дневной лимит, и он пишет в ошибке «retry in 18h30m».
+    Долбиться в такую модель повторами бессмысленно: надо сразу идти к запасной."""
+    s = f"{type(e).__name__}: {e}".lower()
+    if "resource_exhausted" not in s and "exceeded your current quota" not in s:
+        return 0.0
+    m = _QUOTA_RETRY_RE.search(s)
+    if not m:
+        return 300.0
+    secs = int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + float(m.group(3) or 0)
+    return min(max(secs, 10.0), 24 * 3600)
+
+
+def llm_quota_status() -> list[str]:
+    """Для /diag: какие модели сейчас в простое и сколько им осталось."""
+    now = time.monotonic()
+    return [f"{mdl}: ещё {int((t - now) // 60)} мин"
+            for mdl, t in sorted(_llm_quota_until.items()) if t > now]
+
+
 async def llm_answer(model: str, messages: list[dict], **kw) -> str:
     """Запрос к модели с повторами и запасной моделью. Возвращает текст или бросает исключение.
-    Если основная модель перегружена (429), пробуем её ещё раз с паузой, потом CHAT_MODEL_FALLBACK."""
+    Если основная модель перегружена (429), пробуем её ещё раз с паузой, потом CHAT_MODEL_FALLBACK.
+    Если она исчерпала дневную квоту — откладываем её до сброса и сразу берём запасную."""
     models = [model]
     if CHAT_MODEL_FALLBACK and CHAT_MODEL_FALLBACK != model:
         models.append(CHAT_MODEL_FALLBACK)
+    now = time.monotonic()
+    live = [m for m in models if _llm_quota_until.get(m, 0.0) <= now]
+    if not live:
+        live = models[-1:]   # все в простое — всё равно пробуем одну: вдруг квота уже обновилась
     last: Exception | None = None
-    for mdl in models:
+    for mdl in live:
         for attempt in range(len(LLM_BACKOFF)):
             try:
                 r = await llm.chat.completions.create(model=mdl, messages=messages, **kw)
@@ -1257,10 +1293,16 @@ async def llm_answer(model: str, messages: list[dict], **kw) -> str:
                 if ans:
                     if mdl != model:
                         log.info("Ответ получен запасной моделью %s", mdl)
+                    _llm_quota_until.pop(mdl, None)
                     return ans
                 last = ValueError("пустой ответ модели")
             except Exception as e:
                 last = e
+                wait = _llm_quota_wait(e)
+                if wait:
+                    _llm_quota_until[mdl] = time.monotonic() + wait
+                    log.warning("Модель %s исчерпала квоту, откладываем на %s мин", mdl, int(wait // 60))
+                    break   # повторы не помогут: квота сбросится не скоро
                 log.warning("Модель %s, попытка %s: %s: %s", mdl, attempt + 1, type(e).__name__, e)
                 if not _llm_transient(e):
                     break   # не перегрузка, повторять бессмысленно — сразу к запасной модели
@@ -2293,15 +2335,14 @@ async def photo_prompt_en(prompt: str) -> str:
     """Переводит запрос на английский в виде короткого описания модной фотосессии:
     так генератор лучше понимает запрос и реже отказывает на безобидном (бельё, купальник, чулки)."""
     try:
-        r = await llm.chat.completions.create(
-            model=CHAT_MODEL_FREE, temperature=0.3,
-            messages=[{"role": "system", "content":
-                       "Rewrite the user's photo request as a short English scene description for a tasteful "
-                       "fashion or lingerie-catalog photoshoot of one adult woman: outfit, place, pose, light. "
-                       "Neutral, non-explicit wording. Max 40 words. Output only the description."},
-                      {"role": "user", "content": prompt}])
-        out = (r.choices[0].message.content or "").strip().strip('"')
-        return out or prompt
+        out = await llm_answer(
+            CHAT_MODEL_FREE,
+            [{"role": "system", "content":
+              "Rewrite the user's photo request as a short English scene description for a tasteful "
+              "fashion or lingerie-catalog photoshoot of one adult woman: outfit, place, pose, light. "
+              "Neutral, non-explicit wording. Max 40 words. Output only the description."},
+             {"role": "user", "content": prompt}], temperature=0.3)
+        return out.strip('"') or prompt
     except Exception:
         log.exception("Не удалось переписать запрос на фото")
         return prompt
@@ -2656,13 +2697,12 @@ VISION_CLASSIFY = (
 async def vision_look(image_b64: str) -> dict:
     """Что на фото. Возвращает {'kind', 'subject', 'desc'}; при сбое kind='error'."""
     try:
-        r = await llm.chat.completions.create(
-            model=VISION_MODEL, temperature=0,
-            messages=[{"role": "user", "content": [
+        raw = await llm_answer(
+            VISION_MODEL,
+            [{"role": "user", "content": [
                 {"type": "text", "text": VISION_CLASSIFY},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-            ]}])
-        raw = (r.choices[0].message.content or "").strip()
+            ]}], temperature=0)
         mt = re.search(r"\{.*\}", raw, re.S)
         data = json.loads(mt.group(0)) if mt else {}
         kind = str(data.get("kind", "")).lower().strip()
@@ -2672,7 +2712,7 @@ async def vision_look(image_b64: str) -> dict:
                 "desc": str(data.get("desc", ""))[:200]}
     except Exception as e:
         log.exception("Ошибка распознавания фото")
-        await notify_admin(f"Ошибка распознавания фото ({VISION_MODEL}): {type(e).__name__}: {e}", "vision")
+        await notify_admin(f"Ошибка распознавания фото ({VISION_MODEL}): {type(e).__name__}: {str(e)[:200]}", "vision")
         return {"kind": "error", "subject": "", "desc": ""}
 
 
@@ -2715,13 +2755,12 @@ async def rate_photo(chat_id: int, uid: int, file_id: str, lang: str) -> bool:
         if look["kind"] in ("minor", "nsfw", "error"):
             return False
         async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
-            r = await llm.chat.completions.create(
-                model=VISION_MODEL, temperature=0.85,
-                messages=[{"role": "user", "content": [
+            text = await llm_answer(
+                VISION_MODEL,
+                [{"role": "user", "content": [
                     {"type": "text", "text": RATE_PROMPT + f"\nWrite {LANG_FOR_MODEL[lang]}."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                ]}])
-            text = (r.choices[0].message.content or "").strip()
+                ]}], temperature=0.85)
         if not text:
             return False
         await bot.send_message(chat_id, text)
@@ -2743,9 +2782,8 @@ async def update_memory(uid: int) -> None:
             "важные факты, договорённости, общий настрой. Не более 600 символов, пиши только текст заметки.\n\n"
             f"Текущая заметка: {u['memory_note'] or 'пусто'}\n\nНовый фрагмент диалога:\n{dialog}"
         )
-        r = await llm.chat.completions.create(
-            model=CHAT_MODEL_FREE, messages=[{"role": "user", "content": prompt}], temperature=0.3)
-        note = (r.choices[0].message.content or "").strip()[:800]
+        note = (await llm_answer(CHAT_MODEL_FREE, [{"role": "user", "content": prompt}],
+                                 temperature=0.3))[:800]
         if note:
             await set_fields(uid, memory_note=note, since_summary=0)
     except Exception:
@@ -2771,10 +2809,10 @@ async def make_proactive(r: dict, instruction: str, fallbacks: dict[str, list[st
                 task += " Собеседница — девушка, ты её подруга, без флирта, обращайся в женском роде."
             elif r.get("gender") == "m":
                 task += " Собеседник — парень."
-            resp = await llm.chat.completions.create(
-                model=CHAT_MODEL_FREE, temperature=0.9,
-                messages=[{"role": "system", "content": PERSONA}, {"role": "user", "content": task}])
-            text = (resp.choices[0].message.content or "").strip().strip('"«»')
+            text = (await llm_answer(
+                CHAT_MODEL_FREE,
+                [{"role": "system", "content": PERSONA}, {"role": "user", "content": task}],
+                temperature=0.9)).strip('"«»')
             if text:
                 return text[:300]
         except Exception:
@@ -3350,16 +3388,17 @@ async def start_roleplay(chat_id: int, uid: int, plot: str) -> None:
     opening = ""
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=chat_id):
-            r = await llm.chat.completions.create(
-                model=CHAT_MODEL, temperature=0.9,
-                messages=[{"role": "system", "content": build_system(u)},
-                          {"role": "user", "content": "(Начни сцену первой: 1-3 предложения от лица своего "
-                                                      "персонажа, с короткой обстановкой в *звёздочках*. "
-                                                      f"Пиши {LANG_FOR_MODEL[L]}. Не упоминай эту инструкцию.)"}])
-        opening = (r.choices[0].message.content or "").strip()
+            opening = await llm_answer(
+                CHAT_MODEL,
+                [{"role": "system", "content": build_system(u)},
+                 {"role": "user", "content": "(Начни сцену первой: 1-3 предложения от лица своего "
+                                             "персонажа, с короткой обстановкой в *звёздочках*. "
+                                             f"Пиши {LANG_FOR_MODEL[L]}. Не упоминай эту инструкцию.)"}],
+                temperature=0.9)
     except Exception as e:
         log.exception("Ошибка начала ролевой игры")
-        await notify_admin(f"Ошибка начала ролевой игры: {type(e).__name__}: {e}", "rp")
+        # В оповещение кладём только суть: полная ошибка Gemini — это экран текста со ссылками
+        await notify_admin(f"Ошибка начала ролевой игры: {type(e).__name__}: {str(e)[:200]}", "rp")
     if not opening:
         opening = tr(L, "rp_fallback")
     await add_assistant_msg(uid, opening)
@@ -3986,7 +4025,7 @@ async def chat_core(m: types.Message, text: str) -> None:
                     await asyncio.sleep(wait)
         except Exception as e:
             log.exception("Ошибка LLM")
-            await notify_admin(f"Ошибка LLM ({model}): {type(e).__name__}: {e}", "llm")
+            await notify_admin(f"Ошибка LLM ({model}): {type(e).__name__}: {str(e)[:200]}", "llm")
             # Сообщение не списано: пользователь просто пишет ещё раз
             await m.answer(tr(L, "llm_busy" if _llm_transient(e) else "llm_error"))
             return
@@ -4935,6 +4974,7 @@ async def adm_stats(m: types.Message):
         f"Эталон внешности: {ref}\n"
         f"Голосовые: {voice}, озвучено всего: {voices}\n"
         f"Бесплатных озвучек сегодня: {int(voices_day)} из {VOICE_DAILY_TOTAL}\n"
+        f"Модель: {CHAT_MODEL}" + (f" ⚠️ в простое — {'; '.join(quota)}\n" if (quota := llm_quota_status()) else "\n") +
         f"Источники ссылок: /sources")
 
 
@@ -5275,14 +5315,13 @@ async def translate_update(text: str) -> dict[str, str]:
     out = {"ru": text}
     for L in ("en", "de"):
         try:
-            r = await llm.chat.completions.create(
-                model=CHAT_MODEL_FREE, temperature=0.3,
-                messages=[{"role": "system", "content":
-                           "You translate a short message from a chat companion bot to its users. "
-                           f"Translate into {'English' if L == 'en' else 'German'}. Keep the tone, "
-                           "emoji and line breaks. Output only the translation."},
-                          {"role": "user", "content": text}])
-            out[L] = (r.choices[0].message.content or "").strip() or text
+            out[L] = await llm_answer(
+                CHAT_MODEL_FREE,
+                [{"role": "system", "content":
+                  "You translate a short message from a chat companion bot to its users. "
+                  f"Translate into {'English' if L == 'en' else 'German'}. Keep the tone, "
+                  "emoji and line breaks. Output only the translation."},
+                 {"role": "user", "content": text}], temperature=0.3) or text
         except Exception:
             log.exception("Не удалось перевести текст рассылки на %s", L)
             out[L] = text
@@ -5363,10 +5402,10 @@ async def make_post_draft(topic: str, lang: str = "ru") -> tuple[str, bytes]:
     if lang != "ru":
         task += ("\nПиши как носительница языка, живым разговорным языком, а не переводом с русского. "
                  "Не упоминай Россию, рубли и русские реалии, если тема этого не требует.")
-    r = await llm.chat.completions.create(
-        model=CHAT_MODEL, temperature=0.95,
-        messages=[{"role": "system", "content": PERSONA + " " + RULES}, {"role": "user", "content": task}])
-    raw = (r.choices[0].message.content or "").strip()
+    raw = await llm_answer(
+        CHAT_MODEL,
+        [{"role": "system", "content": PERSONA + " " + RULES}, {"role": "user", "content": task}],
+        temperature=0.95)
     mt = re.search(r"ТЕКСТ:\s*(.+?)\s*ФОТО:\s*(.+)", raw, re.S)
     if mt:
         text, scene = mt.group(1).strip(), mt.group(2).strip()
