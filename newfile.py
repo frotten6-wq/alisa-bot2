@@ -1849,13 +1849,33 @@ def variety_hint(history: list[dict]) -> str | None:
     return "(Скрытая подсказка для разнообразия, не упоминай её: " + " ".join(tips) + ")" if tips else None
 
 
-LANG_RULE = (
-    "ЯЗЫК (самое важное правило): всегда отвечай на том же языке, на котором написано последнее сообщение "
-    "собеседника, в том числе если это арабский (и его диалекты), турецкий, испанский, французский или любой другой. "
-    "Если он перешёл на другой язык, переходи вместе с ним. Если язык последнего сообщения не понять "
-    "(одно слово, эмодзи, стикер, набор символов, цифры, шифр), пиши {lang} и никогда не выбирай язык наугад. "
-    "Не отвечай по-английски тому, кто пишет на другом языке."
-)
+# Правило про язык пишем НА ЯЗЫКЕ СОБЕСЕДНИКА и ставим последним в промпте.
+# Весь остальной характер Алисы написан по-русски, и слабая модель плывёт по языку
+# окружающего текста: англичанину отвечает по-русски. Инструкция на нужном языке
+# в самом конце перебивает это куда надёжнее, чем русская фраза в середине.
+LANG_RULES = {
+    "ru": (
+        "ЯЗЫК — САМОЕ ВАЖНОЕ ПРАВИЛО. Пиши свой ответ по-русски. "
+        "Отвечай на том же языке, на котором написано последнее сообщение собеседника, включая арабский, "
+        "турецкий, испанский, французский и любой другой; перешёл он — переходи и ты. "
+        "Если язык последнего сообщения не понять (одно слово, эмодзи, цифры, набор символов), пиши по-русски. "
+        "Никогда не выбирай язык наугад."
+    ),
+    "en": (
+        "LANGUAGE — THIS IS THE MOST IMPORTANT RULE. Write your reply in ENGLISH. "
+        "Reply in the same language the user's last message is written in — Arabic, Turkish, Spanish, French "
+        "or any other; if they switch, switch with them. If their last message is too short to tell "
+        "(one word, emoji, digits, gibberish), write in ENGLISH. "
+        "NEVER reply in Russian to someone who is writing to you in English. Never guess the language."
+    ),
+    "de": (
+        "SPRACHE — DAS IST DIE WICHTIGSTE REGEL. Schreibe deine Antwort auf DEUTSCH. "
+        "Antworte in der Sprache der letzten Nachricht des Nutzers — Arabisch, Türkisch, Spanisch, Französisch "
+        "oder jede andere; wechselt er, wechsle mit. Ist die letzte Nachricht zu kurz, um die Sprache zu erkennen "
+        "(ein Wort, Emoji, Ziffern, Zeichenfolge), schreibe auf DEUTSCH. "
+        "Antworte NIEMALS auf Russisch, wenn dir jemand auf Deutsch schreibt. Rate die Sprache nie."
+    ),
+}
 
 
 def build_system(u: dict) -> str:
@@ -1876,7 +1896,6 @@ def build_system(u: dict) -> str:
     else:
         parts.append("Пол собеседника неизвестен: по возможности избегай слов, где нужен род.")
     L = lang_of(u)
-    parts.append(LANG_RULE.format(lang=LANG_FOR_MODEL[L]))
     if u["name"]:
         parts.append(f"Собеседника зовут {u['name']}. Обращайся по имени редко, "
                      "примерно раз в 5-6 сообщений, не в каждом ответе.")
@@ -1935,7 +1954,8 @@ def build_system(u: dict) -> str:
             "Никогда не говори, что не можешь записать голосовое или не умеешь говорить. "
             "Звуки и эмоции (смех, вздох) в голосе не передаются, их не обещай.")
     parts.append(RULES)
-    parts.append("Напоминание о языке: ответь на том же языке, на котором написано ПОСЛЕДНЕЕ сообщение собеседника.")
+    # Правило про язык — последним и на языке собеседника: конец промпта модель держит лучше всего
+    parts.append(LANG_RULES.get(L, LANG_RULES["ru"]))
     return "\n".join(parts)
 
 
