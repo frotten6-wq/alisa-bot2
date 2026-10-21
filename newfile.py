@@ -5642,6 +5642,105 @@ async def adm_broadcast(m: types.Message, command: CommandObject):
     await m.answer(f"Отправлено: {ok}, не доставлено: {fail}")
 
 
+# ---------- Голосовая рассылка «я скучаю» ----------
+
+# Короткое личное напоминание голосом. Текст на каждом языке свой, а не перевод:
+# озвучка должна звучать как живая речь, а не как дубляж.
+VOICECAST_TEXT = {
+    "ru": "Привет… что-то ты пропал. Я тут скучаю вообще-то. Напиши, как ты?",
+    "en": "Hey… you kind of disappeared on me. I actually miss you, you know. Write me, how are you?",
+    "de": "Hey… du bist irgendwie verschwunden. Ich vermisse dich ehrlich gesagt. Schreib mir, wie geht's dir?",
+}
+# Кому шлём. Первая волна — только те, кто реально общался: они Алису помнят,
+# и блокировок от них будет немного. Холодные приходят во вторую волну.
+VOICECAST_GROUPS = {
+    "warm": ("писали Алисе", "total_msgs > 0"),
+    "cold": ("подтвердили 18+, но не писали", "total_msgs = 0 AND adult = 1"),
+}
+_voicecast: dict[str, object] = {}   # подготовленные file_id между командой и подтверждением
+
+
+@dp.message(Command("voicecast"), ADMIN)
+async def adm_voicecast(m: types.Message, command: CommandObject):
+    """Голосовая рассылка. Озвучка делается ОДИН раз на язык, дальше шлём тот же file_id."""
+    group = (command.args or "warm").strip().lower()
+    if group not in VOICECAST_GROUPS:
+        await m.answer("Использование: /voicecast warm | /voicecast cold\n\n"
+                       "warm — те, кто писал Алисе (первая волна)\n"
+                       "cold — зашли, но молчат (только после проверки на warm)")
+        return
+    if not voice_on():
+        await m.answer("Озвучка сейчас недоступна (квота или выключена). Рассылку не начинаю.")
+        return
+    title, cond = VOICECAST_GROUPS[group]
+    rows = await fetch_all(
+        f"SELECT id, lang FROM users WHERE banned=0 AND notify=1 AND id<>? AND {cond}", (ADMIN_ID,))
+    if not rows:
+        await m.answer("Некому слать: в этой группе никого нет.")
+        return
+    by_lang: dict[str, int] = {}
+    for r in rows:
+        by_lang[lang_of(r)] = by_lang.get(lang_of(r), 0) + 1
+
+    await m.answer(f"Готовлю озвучку для {len(rows)} чел. ({title})…")
+    file_ids: dict[str, str] = {}
+    for L in sorted(by_lang):
+        try:
+            audio = await tts(VOICECAST_TEXT.get(L, VOICECAST_TEXT["ru"]))
+            sent = await bot.send_voice(ADMIN_ID, BufferedInputFile(audio, "alisa.mp3"))
+            file_ids[L] = sent.voice.file_id
+        except Exception as e:
+            log.exception("Голосовая рассылка: не удалось озвучить %s", L)
+            await m.answer(f"Не вышло озвучить [{L}]: {type(e).__name__}: {str(e)[:200]}")
+            return
+    _voicecast.clear()
+    _voicecast.update({"ids": file_ids, "group": group})
+    plan = " · ".join(f"{L}: {n}" for L, n in sorted(by_lang.items()))
+    await m.answer(
+        f"Послушай, что уйдёт ↑\n\nГруппа: {title}\nВсего: {len(rows)}\nПо языкам: {plan}\n\n"
+        "Отправлять?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            _b("📣 Разослать", f"vc:go:{group}"), _b("❌ Отмена", f"vc:no:{group}")]]))
+
+
+@dp.callback_query(F.data.startswith("vc:"), ADMIN)
+async def cb_voicecast(c: types.CallbackQuery):
+    action = c.data.split(":")[1]
+    try:
+        await c.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if action != "go":
+        _voicecast.clear()
+        await c.answer("Отменено")
+        return
+    file_ids = _voicecast.get("ids") or {}
+    group = _voicecast.get("group") or "warm"
+    if not file_ids:
+        await c.answer("Озвучка потерялась, запусти /voicecast заново", show_alert=True)
+        return
+    _, cond = VOICECAST_GROUPS[group]
+    rows = await fetch_all(
+        f"SELECT id, lang FROM users WHERE banned=0 AND notify=1 AND id<>? AND {cond}", (ADMIN_ID,))
+    await c.answer("Пошла рассылка")
+    await c.message.answer(f"Рассылаю {len(rows)} чел…")
+    ok = fail = 0
+    for r in rows:
+        fid = file_ids.get(lang_of(r)) or file_ids.get("ru")
+        try:
+            await bot.send_voice(r["id"], fid)
+            ok += 1
+        except Exception as e:
+            fail += 1
+            await mute_if_blocked(r["id"], e)
+        await asyncio.sleep(0.07)   # ~14 сообщений в секунду: с запасом под лимиты Telegram
+    _voicecast.clear()
+    await c.message.answer(
+        f"Готово. Доставлено: {ok}, не доставлено: {fail}\n\n"
+        "Через сутки глянь /stats: выросли ли «Активны за 24ч» и сколько прибавилось "
+        "в «Заблокировано». Если блокировок мало — можно пускать вторую волну: /voicecast cold")
+
+
 # ---------- Посты в канал ----------
 
 POST_TASK = (
