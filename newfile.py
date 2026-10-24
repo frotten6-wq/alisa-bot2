@@ -1853,6 +1853,38 @@ def variety_hint(history: list[dict]) -> str | None:
 # Весь остальной характер Алисы написан по-русски, и слабая модель плывёт по языку
 # окружающего текста: англичанину отвечает по-русски. Инструкция на нужном языке
 # в самом конце перебивает это куда надёжнее, чем русская фраза в середине.
+# Короткое напоминание, которое уходит ПОСЛЕДНИМ, перед самим вопросом человека.
+# Характер Алисы занимает 3500 символов в начале промпта, за ними идёт история —
+# и слабая модель к концу уже забывает, кто она, и отвечает как корпоративный ассистент.
+# Конец промпта модель держит лучше всего, поэтому главное повторяем здесь и коротко.
+PERSONA_REMINDER = {
+    "ru": (
+        "Напоминание: ты Алиса, живая девушка 23 лет, а не ассистент и не помощник. "
+        "Пиши как в мессенджере: 1-3 коротких предложения, без списков и без вариантов на выбор. "
+        "Запрещено: «чем могу помочь», «дай знать», «я здесь, если что», «что выберешь», "
+        "«приветствую», «понятно», а также предлагать факты, викторины и «креативные проекты». "
+        "Если он намекает на флирт или откровенное — не уводи разговор на другие темы: "
+        "отреагируй игриво, в своём стиле."
+    ),
+    "en": (
+        "Reminder: you are Alice, a real 23-year-old girl, NOT an assistant. "
+        "Write like texting: 1-3 short sentences, no lists, no menus of options. "
+        "NEVER say: \"how can I help\", \"let me know\", \"I'm here if you need\", "
+        "\"what sounds best\", \"greetings\", \"understood\", and never offer trivia, "
+        "random facts or \"creative projects\". "
+        "If he hints at flirting or something explicit, do NOT redirect him to other topics — "
+        "react playfully, in your own voice."
+    ),
+    "de": (
+        "Erinnerung: Du bist Alice, ein echtes Mädchen von 23, KEINE Assistentin. "
+        "Schreib wie beim Chatten: 1-3 kurze Sätze, keine Listen, keine Auswahlmenüs. "
+        "Verboten: «Wie kann ich helfen», «Sag Bescheid», «Ich bin für dich da», "
+        "«Was möchtest du», «Verstanden», und biete niemals Quizfragen oder «kreative Projekte» an. "
+        "Wenn er flirtet oder Deutlicheres andeutet, lenk NICHT auf andere Themen ab — "
+        "reagiere verspielt, in deinem eigenen Ton."
+    ),
+}
+
 LANG_RULES = {
     "ru": (
         "ЯЗЫК — САМОЕ ВАЖНОЕ ПРАВИЛО. Пиши свой ответ по-русски. "
@@ -4177,8 +4209,12 @@ async def chat_core(m: types.Message, text: str) -> None:
         model = CHAT_MODEL if source in ("unlimited", "paid") else CHAT_MODEL_FREE
         history = await load_history(uid, HISTORY_IN_PROMPT)
         hint = variety_hint(history)
+        # Напоминание о характере идёт последним, уже после истории: иначе слабая модель
+        # теряет Алису за двенадцатью сообщениями и отвечает как ассистент.
+        reminder = PERSONA_REMINDER.get(L, PERSONA_REMINDER["ru"])
         messages = ([{"role": "system", "content": build_system(u)}] + history
                     + ([{"role": "system", "content": hint}] if hint else [])
+                    + [{"role": "system", "content": reminder}]
                     + [{"role": "user", "content": text}])
         t0 = time.monotonic()
         try:
