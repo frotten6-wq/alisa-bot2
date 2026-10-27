@@ -828,10 +828,14 @@ TX = {
                   "de": "+{r} Nachrichten 🎁\nSerie: {s} Tage am Stück."},
     "bonus_tomorrow": {"ru": "\nВозвращайся завтра: бонус будет +{n}.", "en": "\nCome back tomorrow: the bonus will be +{n}.",
                        "de": "\nKomm morgen wieder: dann gibt's +{n}."},
-    "out_of_msgs": {"ru": "Бесплатные сообщения закончились. Можно забрать 🎁 бонус, ввести /promo или выбрать пакет:",
-                    "en": "Your free messages are used up. You can claim a 🎁 bonus, enter /promo or pick a pack:",
-                    "de": "Deine kostenlosen Nachrichten sind aufgebraucht. Hol dir den 🎁 Bonus, gib einen /promo-Code "
-                          "ein oder wähl ein Paket:"},
+    # Пакет идёт первым: раньше первой строкой стоял бесплатный бонус, и человек в момент
+    # решения о покупке естественно жал его и уходил дальше бесплатно.
+    "out_of_msgs": {"ru": "Бесплатные сообщения закончились. Выбери пакет, чтобы продолжить "
+                          "— или забери 🎁 бонус, или введи /promo:",
+                    "en": "Your free messages are used up. Pick a pack to keep going "
+                          "— or claim a 🎁 bonus, or enter /promo:",
+                    "de": "Deine kostenlosen Nachrichten sind aufgebraucht. Wähl ein Paket, um "
+                          "weiterzumachen — oder hol dir den 🎁 Bonus, oder gib /promo ein:"},
     # --- канал и друзья ---
     "no_channel": {"ru": "Канала пока нет 🙂", "en": "No channel yet 🙂", "de": "Noch kein Kanal 🙂"},
     "open_channel": {"ru": "📢 Открыть канал", "en": "📢 Open channel", "de": "📢 Kanal öffnen"},
@@ -2079,11 +2083,17 @@ def spawn(coro) -> None:
 # ---------- Магазин и скидка на первую покупку ----------
 
 async def user_discount(uid: int) -> int:
-    """Скидка в процентах: только пока не было ни одной оплаты и не прошло FIRST_DISCOUNT_HOURS после регистрации."""
-    u = await fetch_one("SELECT created_at FROM users WHERE id=?", (uid,))
+    """Скидка в процентах, пока не было ни одной оплаты.
+
+    Отсчёт идёт от момента, когда человек упёрся в лимит, а не от регистрации:
+    до лимита он доходит за 20 бесплатных сообщений, то есть обычно на второй-третий
+    день. Привязка к регистрации гасила скидку ровно до того момента, когда человек
+    впервые решает, платить ему или уйти."""
+    u = await fetch_one("SELECT created_at, paywall_at FROM users WHERE id=?", (uid,))
     if not u:
         return 0
-    if now_utc() - parse_dt(u["created_at"]) >= timedelta(hours=FIRST_DISCOUNT_HOURS):
+    anchor = parse_dt(u["paywall_at"] or u["created_at"])
+    if now_utc() - anchor >= timedelta(hours=FIRST_DISCOUNT_HOURS):
         return 0
     paid_n = await scalar("SELECT COUNT(*) FROM payments WHERE user_id=? AND refunded=0", (uid,))
     return FIRST_DISCOUNT_PCT if paid_n == 0 else 0
@@ -4118,6 +4128,48 @@ async def handle_photo(m: types.Message, u: dict, prompt: str) -> None:
         await m.answer(tr(L, "gen_photo_q"), reply_markup=kb)
 
 
+# Что Алиса говорит, когда у человека кончились сообщения. Писать должна она сама,
+# своими словами и с учётом разговора: сухое «лимит исчерпан» от автомата ломает всё
+# ощущение живого человека ровно в тот момент, когда решается покупка.
+PAYWALL_TASK = {
+    "ru": "У собеседника закончились сообщения, дальше нужен платный пакет. Скажи об этом сама, "
+          "одной-двумя короткими фразами в своём стиле: тебе жаль прерываться на самом интересном, "
+          "ты хочешь продолжить. Без списков, без цен, без слов «пакет» и «купить» — кнопки он "
+          "увидит ниже. Не выпрашивай деньги и не дави.",
+    "en": "The user has run out of messages and needs a paid pack to continue. Say it yourself, "
+          "in one or two short sentences in your own voice: you're sorry to stop right now, you "
+          "want to keep talking. No lists, no prices, don't say \"pack\" or \"buy\" — he'll see the "
+          "buttons below. Don't beg for money and don't push.",
+    "de": "Dem Nutzer sind die Nachrichten ausgegangen, weiter geht es nur mit einem bezahlten Paket. "
+          "Sag es selbst, in ein bis zwei kurzen Sätzen in deinem Ton: es tut dir leid, gerade jetzt "
+          "aufzuhören, du möchtest weiterreden. Keine Listen, keine Preise, nicht «Paket» oder «kaufen» "
+          "— die Buttons sieht er unten. Bettle nicht um Geld und dräng nicht.",
+}
+
+
+async def paywall_line(u: dict, L: str) -> str:
+    """Личная фраза Алисы в момент лимита. При любой осечке возвращаем пустую строку —
+    тогда человек увидит только обычный текст, и ничего не сломается."""
+    try:
+        history = await load_history(u["id"], 6)
+        msgs = ([{"role": "system", "content": build_system(u)}] + history
+                + [{"role": "system", "content": PAYWALL_TASK.get(L, PAYWALL_TASK["ru"])}])
+        return (await llm_answer(CHAT_MODEL_FREE, msgs, temperature=0.9))[:300]
+    except Exception:
+        log.exception("Не удалось сгенерировать фразу на лимите")
+        return ""
+
+
+async def show_paywall(m: types.Message, u: dict, L: str) -> None:
+    """Экран «сообщения кончились». Личную фразу делаем только при первом попадании:
+    так это не превращается в спам и не жжёт квоту на тех, кто упирается по десять раз."""
+    first = not u.get("paywall_at")
+    await on_paywall(u)          # сначала ставим paywall_at: от него считается скидка
+    line = await paywall_line(u, L) if first else ""
+    text = (line + "\n\n" if line else "") + tr(L, paywall_key(u))
+    await m.answer(text, reply_markup=await shop_markup(u["id"]))
+
+
 async def on_paywall(u: dict) -> None:
     """Человек впервые упёрся в лимит — это самый «горячий» момент, сообщаем админу."""
     await track("paywall", 1)
@@ -4200,8 +4252,7 @@ async def chat_core(m: types.Message, text: str) -> None:
 
         source = pick_source(u, admin)
         if source is None:
-            await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
-            await on_paywall(u)
+            await show_paywall(m, u, L)
             return
         premium = is_premium_mode(u)
         spawn(maybe_react(m, u, text))
@@ -4376,8 +4427,7 @@ async def on_voice(m: types.Message):
         await m.answer(tr(L, "voice_long", n=VOICE_IN_MAX_SEC))
         return
     if pick_source(u, is_admin(uid)) is None:
-        await m.answer(tr(L, paywall_key(u)), reply_markup=await shop_markup(uid))
-        await on_paywall(u)
+        await show_paywall(m, u, L)
         return
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=m.chat.id):
