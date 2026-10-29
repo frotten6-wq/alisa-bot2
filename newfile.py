@@ -1297,7 +1297,7 @@ def _llm_transient(e: Exception) -> bool:
     return any(k in s for k in (
         "ratelimit", "429", "resource-exhausted", "resource exhausted", "capacity", "overload",
         "timeout", "timed out", "502", "503", "504", "bad gateway", "unavailable",
-        "connection", "apiconnection", "internalserver", "500"))
+        "connection", "apiconnection", "network", "internalserver", "500"))
 
 
 # Модели, которые упёрлись в квоту: имя -> момент (time.monotonic), раньше которого не трогаем.
@@ -4054,8 +4054,11 @@ async def cb_channel_check(c: types.CallbackQuery):
             subscribed = member.status in ("member", "administrator", "creator")
         except Exception as e:
             log.exception("Не удалось проверить подписку на канал")
-            await notify_admin(f"Не могу проверить подписку на {ch}: {type(e).__name__}: {e}. "
-                               "Проверь, что бот — администратор канала.", "channel")
+            # Обрыв связи с Telegram — разовая помеха, а не сломанные права.
+            # Советовать админу «проверь права бота» в таком случае только путает.
+            if not _llm_transient(e):
+                await notify_admin(f"Не могу проверить подписку на {ch}: {type(e).__name__}: "
+                                   f"{str(e)[:200]}. Проверь, что бот — администратор канала.", "channel")
             await c.answer(tr(L, "ch_check_fail"), show_alert=True)
             return
         if not subscribed:
