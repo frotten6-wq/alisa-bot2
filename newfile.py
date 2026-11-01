@@ -118,6 +118,9 @@ EDGE_VOICES = {
 if TTS_PROVIDER == "edge":
     VOICE_ENABLED = True    # для Edge ключ не нужен
 VOICE_PRICE = 30            # звёзд за одно голосовое для тех, у кого нет подписки
+# Потолок сообщений в сутки для безлимитных (подписка и VIP). Живой человек столько не напишет:
+# это защита от скрипта, который за ночь выжрет дневную квоту модели на весь бот.
+DAY_CAP = int(env("DAY_CAP", "400"))
 VOICE_MAX_CHARS = int(env("VOICE_MAX_CHARS", "300"))   # длиннее обрезаем, чтобы не тратить символы
 VOICE_SUB_DAILY = 30        # бесплатных озвучек в сутки для подписчиков (у админа без лимита)
 FREE_VOICES = 1             # бесплатных озвучек каждому новому пользователю
@@ -220,6 +223,10 @@ PRODUCTS = {
     "sub_day":   {"title": "Подписка: 1 день",  "price": 99,   "days": 1,  "cat": "sub"},
     "sub_week":  {"title": "Подписка: 7 дней",  "price": 399,  "days": 7,  "cat": "sub"},
     "sub_month": {"title": "Подписка: 30 дней", "price": 1190, "days": 30, "cat": "sub"},
+    # VIP: год безлимита + все настройки + запас фото и голосовых. Год, а не «навсегда»:
+    # навсегда мы платим за человека бесконечно, а получаем деньги один раз.
+    "vip_year":  {"title": "👑 VIP на год", "price": 2500, "days": 365, "unlock": True,
+                  "vip": True, "photos": 10, "voices": 30, "cat": "sub"},
     "gift_flowers": {"title": "💐 Цветы",       "price": 25,   "gift": "flowers", "msgs": 5,  "cat": "gift"},
     "gift_perfume": {"title": "🌸 Духи",        "price": 75,   "gift": "perfume", "msgs": 15, "cat": "gift"},
     "gift_jewelry": {"title": "💎 Украшение",   "price": 200,  "gift": "jewelry", "msgs": 50, "cat": "gift"},
@@ -818,6 +825,39 @@ TX = {
     "prod_sub_day": {"ru": "Подписка: 1 день", "en": "Subscription: 1 day", "de": "Abo: 1 Tag"},
     "prod_sub_week": {"ru": "Подписка: 7 дней", "en": "Subscription: 7 days", "de": "Abo: 7 Tage"},
     "prod_sub_month": {"ru": "Подписка: 30 дней", "en": "Subscription: 30 days", "de": "Abo: 30 Tage"},
+    "prod_vip_year": {"ru": "👑 VIP на год", "en": "👑 VIP for a year", "de": "👑 VIP für ein Jahr"},
+    "vip_welcome": {
+        "ru": "👑 Теперь ты VIP — на целый год.\n\n"
+              "Что это значит:\n"
+              "• сообщения без ограничений, во всех режимах\n"
+              "• все настройки Алисы открыты навсегда\n"
+              "• 10 фото и 30 голосовых сразу на счёт\n"
+              "• закрытый VIP-чат: там можно предлагать идеи и первым пробовать новое "
+              "(ссылку пришлю отдельно)\n\n"
+              "Спасибо, что ты с нами 🖤",
+        "en": "👑 You're VIP now — for a whole year.\n\n"
+              "What you get:\n"
+              "• unlimited messages, in every mode\n"
+              "• all of Alice's settings unlocked forever\n"
+              "• 10 photos and 30 voice replies credited right away\n"
+              "• the private VIP chat: suggest ideas and try new features first "
+              "(I'll send the link separately)\n\n"
+              "Thanks for being here 🖤",
+        "de": "👑 Du bist jetzt VIP — ein ganzes Jahr lang.\n\n"
+              "Das bekommst du:\n"
+              "• unbegrenzte Nachrichten, in allen Modi\n"
+              "• alle Einstellungen von Alice dauerhaft freigeschaltet\n"
+              "• 10 Fotos und 30 Sprachnachrichten sofort gutgeschrieben\n"
+              "• den privaten VIP-Chat: Ideen vorschlagen und Neues zuerst testen "
+              "(den Link schicke ich separat)\n\n"
+              "Danke, dass du dabei bist 🖤"},
+    "day_cap": {
+        "ru": "На сегодня хватит, я уже еле печатаю 🙈 За сутки ушло {n} сообщений — завтра продолжим "
+              "с чистого листа. (Ограничение стоит от ботов, живой человек столько не пишет.)",
+        "en": "That's enough for today, my fingers are done 🙈 {n} messages in one day — we'll pick it up "
+              "tomorrow with a clean slate. (The cap is there to stop bots; a real person never hits it.)",
+        "de": "Für heute reicht's, ich kann kaum noch tippen 🙈 {n} Nachrichten an einem Tag — morgen machen "
+              "wir frisch weiter. (Das Limit ist gegen Bots; ein echter Mensch erreicht es nie.)"},
     "bonus_wait": {"ru": "Бонус уже получен. Следующий через {h} ч {m} мин.\nСерия: {s} дн. Заходи в течение {w} часов "
                          "после последнего бонуса, чтобы серия не прервалась.",
                    "en": "Bonus already claimed. Next one in {h} h {m} min.\nStreak: {s} days. Come back within {w} "
@@ -1581,6 +1621,9 @@ NEW_COLS = {
     "awaiting_nick": "INTEGER NOT NULL DEFAULT 0",
     "source_asked": "INTEGER NOT NULL DEFAULT 0",
     "gift_photo": "INTEGER NOT NULL DEFAULT 0",
+    "vip": "INTEGER NOT NULL DEFAULT 0",
+    "day_msgs": "INTEGER NOT NULL DEFAULT 0",
+    "day_msgs_date": "TEXT",
 }
 
 USER_FIELDS = {
@@ -1592,6 +1635,7 @@ USER_FIELDS = {
     "channel_bonus", "gender", "rp_plot", "awaiting_plot", "lang", "lang_set",
     "bonus_msgs", "premium_used", "source", "paywall_at", "active_days", "last_active_day",
     "custom", "custom_unlocked", "awaiting_nick", "source_asked", "gift_photo",
+    "vip", "day_msgs", "day_msgs_date",
 }
 COUNTER_FIELDS = {
     "messages", "paid", "photo_credits", "relationship", "since_summary",
@@ -1779,6 +1823,17 @@ def pick_source(u: dict, admin: bool) -> str | None:
     return None
 
 
+async def bump_day_msgs(uid: int, u: dict) -> int:
+    """Счётчик сообщений за сутки (по времени админа). Возвращает новое значение."""
+    today = admin_day()
+    if u.get("day_msgs_date") != today:
+        await set_fields(uid, day_msgs=1, day_msgs_date=today)
+        return 1
+    n = (u.get("day_msgs") or 0) + 1
+    await set_fields(uid, day_msgs=n)
+    return n
+
+
 def paywall_key(u: dict) -> str:
     """Какой текст показать, когда сообщения кончились."""
     if is_premium_mode(u) and (u["messages"] < FREE_MESSAGES or (u.get("bonus_msgs") or 0) > 0):
@@ -1935,6 +1990,10 @@ def build_system(u: dict) -> str:
     if u["name"]:
         parts.append(f"Собеседника зовут {u['name']}. Обращайся по имени редко, "
                      "примерно раз в 5-6 сообщений, не в каждом ответе.")
+    if u.get("vip"):
+        parts.append("Этот собеседник — VIP: он поддержал проект на год вперёд. Отдельно это не обсуждай "
+                     "и не благодари в каждом сообщении, просто будь с ним особенно тёплой и внимательной, "
+                     "помни детали его жизни и ничего ему не продавай.")
     if u.get("scenario") == "rp" and u.get("rp_plot"):
         parts.append(RP_RULES + "\nСюжет: " + u["rp_plot"])
     elif u.get("scenario") in SCENARIOS and mode_allowed(u, u["scenario"]):
@@ -4257,6 +4316,9 @@ async def chat_core(m: types.Message, text: str) -> None:
         if source is None:
             await show_paywall(m, u, L)
             return
+        if source == "unlimited" and not admin and await bump_day_msgs(uid, u) > DAY_CAP:
+            await m.answer(tr(L, "day_cap", n=DAY_CAP))
+            return
         premium = is_premium_mode(u)
         spawn(maybe_react(m, u, text))
 
@@ -4630,7 +4692,12 @@ async def on_payment(m: types.Message):
                     await m.answer(tr(L, "voice_refund_fail", c=SUPPORT_CONTACT))
         elif payload in PRODUCTS:
             product = PRODUCTS[payload]
-            if product.get("unlock"):
+            if product.get("vip"):
+                # VIP сам по себе всё открывает: отдельное «настройки разблокированы» тут лишнее
+                await set_fields(uid, vip=1, custom_unlocked=1)
+                await m.answer(tr(L, "vip_welcome"))
+                await tell_admin(f"👑 Новый VIP! {who(await get_user(uid))}", uid)
+            elif product.get("unlock"):
                 await set_fields(uid, custom_unlocked=1)
                 await m.answer(tr(L, "cu_unlocked"))
             # Один товар может давать сразу несколько вещей (комбо «Вечер с Алисой»)
@@ -4859,7 +4926,8 @@ async def user_card(uid: int) -> tuple[str, InlineKeyboardMarkup] | None:
     flags_n = await scalar("SELECT COUNT(*) FROM flags WHERE user_id=?", (uid,))
     adult_txt = {1: "подтверждён", 0: "не подтверждал", -1: "отказ (нет 18)"}.get(u["adult"], str(u["adult"]))
     if has_sub(u):
-        sub_txt = f"до {parse_dt(u['subscription_until']):%d.%m.%Y %H:%M} UTC"
+        sub_txt = ("👑 VIP, " if u.get("vip") else "") + \
+            f"до {parse_dt(u['subscription_until']):%d.%m.%Y %H:%M} UTC"
     elif u["subscription_until"]:
         sub_txt = f"истекла {parse_dt(u['subscription_until']):%d.%m.%Y}"
     else:
@@ -5285,6 +5353,7 @@ async def adm_stats(m: types.Message):
     new_week = await scalar("SELECT COUNT(*) FROM users WHERE created_at > ?", (week_ago,))
     day = await scalar("SELECT COUNT(*) FROM users WHERE last_seen > ?", (day_ago,))
     subs = await scalar("SELECT COUNT(*) FROM users WHERE subscription_until > ?", (ts.isoformat(),))
+    vips = await scalar("SELECT COUNT(*) FROM users WHERE vip=1")
     banned = await scalar("SELECT COUNT(*) FROM users WHERE banned=1")
     flags_day = await scalar("SELECT COUNT(*) FROM flags WHERE created_at > ?", (day_ago,))
     rev = await scalar("SELECT SUM(stars) FROM payments WHERE refunded=0")
@@ -5308,7 +5377,8 @@ async def adm_stats(m: types.Message):
     await m.answer(
         f"Пользователей: {total} (подтвердили 18+: {confirmed})\n"
         f"Новых: за 24ч {new_day}, за 7 дней {new_week}\n"
-        f"Активны за 24ч: {day}\nПодписчиков: {subs}\nЗаблокировано: {banned}\n"
+        f"Активны за 24ч: {day}\nПодписчиков: {subs}" + (f" (из них VIP: {vips})" if vips else "") +
+        f"\nЗаблокировано: {banned}\n"
         f"Начали переписку: {talkers} из {confirmed}\n"
         f"Сообщений Алисе всего: {msgs_total}\n"
         f"Платящих: {paying}\n"
